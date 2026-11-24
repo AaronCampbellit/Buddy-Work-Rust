@@ -6,9 +6,9 @@ Buddy puts an editable note, your clipboard, and a focus timer at the top of you
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.44** · 23.91 MB installer · 44.94 MB installed on Windows 11 x64
+**0.1.1-beta.45** · 24.05 MB installer · 45.32 MB installed on Windows 11 x64
 
-![Buddy’s Notes workspace with three notes and a coastal trail guide containing a color palette and map link](docs/screenshots/notes.png)
+![Buddy’s Notes workspace with three notes and a coastal trail guide containing a color palette and map link](docs/screenshots/rich-note.png)
 
 ## Features
 
@@ -25,17 +25,31 @@ Buddy puts an editable note, your clipboard, and a focus timer at the top of you
 
 ## Try a pinned note
 
-1. Open **Notes**, create a note, and choose **Save**.
+1. Open **Notes** and choose **New note**. Type a title and body. Buddy saves your edits automatically.
 2. Open **Widgets** in the island header. Under **Side widgets**, choose your note, then collapse the island.
 3. Edit the title or body directly in the widget. Press **Ctrl+V** or right-click and choose **Paste** to insert an image at the cursor. The widget saves as you edit. Choose **Open note in Buddy** to continue in the main editor.
 
-![The same coastal trail guide open as a side widget with its inline palette, formatted heading, and clickable map link](docs/screenshots/pinned-note.png)
+![The same coastal trail guide open as a side widget with its inline palette and clickable map link](docs/screenshots/rich-pinned-note.png)
 
 ## More screenshots
 
-**Clipboard in dark mode** shows the selected image beside recent text and links.
+[Compare the web and native interfaces side by side](docs/ui-comparison.md) for twelve matched views on Windows 11, including the island, pinned widgets, camera and settings. The comparison also includes startup and memory measurements.
 
-![Buddy’s dark Clipboard workspace with a pinned color palette selected and its image preview visible](docs/screenshots/clipboard.png)
+<details>
+<summary><strong>Watch the island open and close</strong></summary>
+
+The island expands around the status header while the workspace fades into view. Windows reduced-motion settings and Buddy’s own reduced-motion switch make the change immediate.
+
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/notes.png">
+  <img src="docs/screenshots/island-motion.png" alt="The native island opening to an editable note and closing again">
+</picture>
+
+</details>
+
+**Clipboard in dark mode** keeps each image, link, and text snippet on its own card. Search the history, filter by type, or pin a card to keep it.
+
+![Buddy’s dark Clipboard workspace with a pinned image, text snippet, and map link](docs/screenshots/clipboard.png)
 
 <details>
 <summary><strong>Show the Pomodoro timer and stopwatch</strong></summary>
@@ -46,7 +60,7 @@ Buddy puts an editable note, your clipboard, and a focus timer at the top of you
 
 ## Install and permissions
 
-The installer runs under your Windows user account and is unsigned. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,323,687 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.46 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
@@ -54,6 +68,6 @@ Windows encrypts saved notes and clipboard history for the current user. OCR run
 
 Buddy uses Rust and native Win32 controls. Build from `native-rust` on Windows x64. To package the app, extract the matching portable ZIP and pass its `Buddy\camera` folder to the packager. [Build and packaging instructions](native-rust/README.md#build-and-package-on-windows-x64)
 
-[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.44/Buddy-Work-Rust-Setup-x64.exe
-[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.44/Buddy-Work-Rust-Portable-x64.zip
-[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.44
+[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.45/Buddy-Work-Rust-Setup-x64.exe
+[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.45/Buddy-Work-Rust-Portable-x64.zip
+[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.45

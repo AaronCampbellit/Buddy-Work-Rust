@@ -12,7 +12,7 @@ mod update;
 
 type Outcome = Result<View, String>;
 #[derive(Default, Clone)]
-struct View { rows: Vec<String>, detail: String, status: String, url: Option<String>, media_playing: bool, privacy: Option<String>, notifications: Option<Vec<(String,String)>> }
+struct View { rows: Vec<String>, detail: String, status: String, url: Option<String>, media_playing: bool, position:i64, duration:i64, privacy: Option<String>, notifications: Option<Vec<(String,String)>> }
 impl View {
     fn status(value: &str) -> Self { Self { status: value.to_owned(), ..Self::default() } }
 }
@@ -22,6 +22,7 @@ struct Activity {
     busy: BTreeSet<&'static str>,
     done: VecDeque<(&'static str, Outcome)>,
     notification_ids: Option<BTreeSet<String>>,
+    cleared_notifications:BTreeSet<String>,
     diagnostic_samples: Vec<String>,
     diagnostic_folder: Option<PathBuf>,
     rewrite_cancel: Option<Arc<AtomicBool>>,
@@ -64,7 +65,7 @@ fn media(command: &str, seconds: i64) -> windows::core::Result<View> {
     let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == Playback::Playing;
     let rows = vec![item.Title()?.to_string(), item.Artist()?.to_string(), item.AlbumTitle()?.to_string(),
         format!("{} · {} / {} seconds", if playing {"Playing"} else {"Paused"}, timeline.Position()?.Duration / 10_000_000, timeline.EndTime()?.Duration / 10_000_000)];
-    Ok(View {rows, media_playing: playing, status: session.SourceAppUserModelId()?.to_string(), ..Default::default()})
+    Ok(View {rows, media_playing: playing, position:timeline.Position()?.Duration/10_000_000, duration:timeline.EndTime()?.Duration/10_000_000, status: session.SourceAppUserModelId()?.to_string(), ..Default::default()})
 }
 fn notifications(privacy: &str) -> windows::core::Result<View> {
     let listener = Listener::Current()?;
@@ -127,7 +128,7 @@ pub fn render(ui: &mut Ui, page: &str) -> String {
         _ => String::new()
     }
 }
-fn open(target: &str) -> Result<String,String> {
+pub(crate) fn open(target: &str) -> Result<String,String> {
     use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     use windows::core::w;
     let result = unsafe { ShellExecuteW(None,w!("open"),&HSTRING::from(target),None,None,SW_SHOWNORMAL) };
@@ -206,9 +207,10 @@ pub fn action(ui: &mut Ui, page: &str, name: &str) -> Result<String,String> {
         _=>Ok(String::new())
     }
 }
+pub(crate) fn rewrite_busy()->bool{state().busy.contains("rewrite")}
 pub fn set_rewrite_draft(ui:&mut Ui,text:&str) {
     ui.set_input(&setting(ui,"rewrite-instruction",""));
-    ui.set_detail(text);
+    ui.set_detail(text);ui.editor_rewrite_draft(text);
     let saved=setting(ui,"rewrite-preset","clearer");
     ui.status(&format!("Text ready. Select a rewrite action to send it. Saved preset: {saved}."));
 }
@@ -297,7 +299,10 @@ pub fn tick(ui: &mut Ui) {
                             toast=Some(if more>0 && setting(ui,"notificationGrouping","on")=="on" {format!("{app} · {} notifications",more+1)} else {first.clone()});
                         }
                     }
-                    s.notification_ids=Some(entries.into_iter().map(|(id,_)|id).collect());
+                    let current=entries.iter().map(|(id,_)|id.clone()).collect::<BTreeSet<_>>();
+                    s.cleared_notifications.retain(|id|current.contains(id));
+                    view.rows=entries.into_iter().filter(|(id,_)|!s.cleared_notifications.contains(id)).map(|(_,row)|row).collect();
+                    s.notification_ids=Some(current);
                 } else {s.notification_ids=None;}
             }
             if key!="capture" {s.cache.insert(key.into(),view.clone());}
@@ -307,21 +312,35 @@ pub fn tick(ui: &mut Ui) {
             state().compact=Some((t.clone(),Instant::now()+Duration::from_secs(seconds)));
             ui.status(&t);
         }}
+        if ui.page=="settings" && matches!(key,"capture"|"diagnostics"|"rewrite"|"notifications"){ui.status(&view.status);ui.layout();}
+        if ui.page=="notifications" && key=="notifications"{ui.layout();}
+        if ui.page=="home" && key=="media"{ui.layout();}
         if ui.page==key || (ui.page=="diagnostics" && key=="capture") {
             if (success || key=="notifications") && key!="capture" {
                 ui.set_rows(&view.rows);
                 if !view.detail.is_empty() {
                     if source_text.as_ref().is_some_and(|initial| *initial!=ui.detail()){
                         view.status="Rewrite ready. Choose Show last result to keep or replace the current draft.".into();
-                    } else {ui.set_detail(&view.detail);}
+                    } else {ui.set_detail(&view.detail);if key=="rewrite"&&source_text.is_some(){ui.editor_rewrite_result(&view.detail);}}
                 }
             }
-            ui.status(&view.status);
+            ui.status(&view.status);if key=="rewrite"{ui.layout();}
         }
     }
 }
 
-pub fn home_media()->Option<String> {
+pub(crate) fn notification_permission()->&'static str{
+    let s=state();let Some(v)=s.cache.get("notifications")else{return "unspecified"};
+    if v.status.contains("is allowed"){"allowed"}else if v.status.contains("is denied"){"denied"}else{"unspecified"}
+}
+pub(crate) fn clear_notice_history(){let mut s=state();s.cleared_notifications=s.notification_ids.clone().unwrap_or_default();if let Some(v)=s.cache.get_mut("notifications"){v.rows.clear();}}
+pub(crate) fn notice_titles()->Vec<String>{state().cache.get("notifications").map(|v|v.rows.clone()).unwrap_or_default()}
+pub(crate) fn media_details()->Option<(String,String,i64,i64)>{
+    let s=state();let v=s.cache.get("media")?;if !v.media_playing{return None}
+    let artist=[v.rows.get(1).map(String::as_str).unwrap_or(""),v.status.as_str()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join(" · ");
+    Some((v.rows.first()?.clone(),artist,v.position,v.duration))
+}
+pub(crate) fn home_media()->Option<String> {
     let s=state();
     let view=s.cache.get("media")?;
     if !view.media_playing {return None;}

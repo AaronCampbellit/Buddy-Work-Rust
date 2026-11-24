@@ -78,6 +78,40 @@ fn thumbnail(ui:&Ui,id:&str)->Result<Rc<RgbaImage>,String>{
 fn missing()->RgbaImage{
     RgbaImage::from_fn(56,36,|x,y|image::Rgba(if x<2||x>=54||y<2||y>=34||x==y+10||x+y==45{[130,130,130,255]}else{[232,232,232,255]}))
 }
+// The on-disk attachment stays at its original resolution. This is the web
+// editor's 68 × 48 cover thumbnail, with its two/four pixel inline margins.
+const IMAGE_W:u32=68;
+const IMAGE_H:u32=48;
+const IMAGE_MARGIN_X:u32=4;
+const IMAGE_MARGIN_Y:u32=2;
+fn note_thumbnail(src:&RgbaImage)->RgbaImage {
+    use image::imageops::{crop_imm,resize,FilterType};
+    let (w,h)=src.dimensions();
+    let cw=(h*IMAGE_W/IMAGE_H).clamp(1,w);
+    let ch=(w*IMAGE_H/IMAGE_W).clamp(1,h);
+    let crop=crop_imm(src,(w-cw)/2,(h-ch)/2,cw,ch).to_image();
+    let picture=resize(&crop,IMAGE_W,IMAGE_H,FilterType::Triangle);
+    RgbaImage::from_fn(IMAGE_W+2*IMAGE_MARGIN_X,IMAGE_H+2*IMAGE_MARGIN_Y,|x,y|{
+        let x=x as i32-IMAGE_MARGIN_X as i32;let y=y as i32-IMAGE_MARGIN_Y as i32;
+        if x<0||x>=IMAGE_W as i32||y<0||y>=IMAGE_H as i32{return image::Rgba([0;4]);}
+        let mut pixel=*picture.get_pixel(x as u32,y as u32);
+        let (fx,fy)=(x as f32+0.5,y as f32+0.5);
+        let dx=fx-fx.clamp(6.0,IMAGE_W as f32-6.0);let dy=fy-fy.clamp(6.0,IMAGE_H as f32-6.0);
+        pixel[3]=(pixel[3] as f32*(6.5-dx.hypot(dy)).clamp(0.0,1.0)).round() as u8;
+        let (cx,cy)=(fx-(IMAGE_W as f32-10.5),fy-10.5);
+        let circle=(9.0-cx.hypot(cy)).clamp(0.0,1.0)*0.84;
+        if circle>0.0{
+            for (value,tint) in pixel.0.iter_mut().take(3).zip([8.,12.,15.]){*value=(*value as f32*(1.0-circle)+tint*circle).round() as u8;}
+            pixel[3]=(pixel[3] as f32+(255.0-pixel[3] as f32)*circle).round() as u8;
+            if cx.abs().max(cy.abs())<=2.8 {
+                let line=(1.1-(cx.abs()-cy.abs()).abs()).clamp(0.0,1.0);
+                for value in pixel.0.iter_mut().take(3) {*value=(*value as f32+(255.0-*value as f32)*line).round() as u8;}
+            }
+        }
+        pixel
+    })
+}
+
 fn bgra(image:&RgbaImage,bg:u32)->Vec<u8>{
     let (r,g,b)=(bg&255,(bg>>8)&255,(bg>>16)&255);
     let mut data=Vec::with_capacity(image.len());
@@ -175,13 +209,18 @@ unsafe fn place(hwnd:HWND,bounds:(i32,i32,i32,i32),visible:bool){
     ShowWindow(hwnd,if visible{SW_SHOWNA}else{SW_HIDE});
 }
 
+#[derive(Default)]
+struct NoteHint { font:Cell<HFONT>, color:Cell<u32> }
+impl Drop for NoteHint {
+    fn drop(&mut self) { unsafe { if !self.font.get().is_null(){DeleteObject(self.font.get());} } }
+}
 struct Preview{image:RefCell<Option<(String,Rc<RgbaImage>)>>,field:Cell<u32>}
 struct OleGuard;
 impl Drop for OleGuard{fn drop(&mut self){unsafe{OleUninitialize();}}}
 pub(crate) struct Controls{
     pub editor:HWND,preview:HWND,token:Cell<u32>,keys:RefCell<HashMap<u32,String>>,
-    clip:Box<Preview>,_ole:OleGuard,bg:Cell<u32>,
-    formatted:Box<Cell<bool>>,retained_format:RefCell<Option<(String,String)>>,style:Cell<(u32,u32,i32)>,load_error:RefCell<Option<String>>,
+    clip:Box<Preview>,hint:Box<NoteHint>,corner_size:Cell<(i32,i32,i32)>,_ole:OleGuard,bg:Cell<u32>,
+    formatted:Box<Cell<bool>>,retained_format:RefCell<Option<(String,String)>>,style:Cell<(u32,u32,i32,i32)>,load_error:RefCell<Option<String>>,
 }
 impl Controls{
     pub fn new(parent:HWND)->Result<Self,String>{
@@ -202,29 +241,68 @@ impl Controls{
             SendMessageW(editor,EM_SETEVENTMASK,0,(ENM_CHANGE|ENM_UPDATE|ENM_LINK)as _);
             let clip=Box::new(Preview{image:Default::default(),field:Cell::new(0xffffff)});
             let formatted=Box::new(Cell::new(false));
+            let hint=Box::<NoteHint>::default();
+            SetWindowSubclass(editor,Some(hint_proc),2,hint.as_ref() as *const _ as usize);
             SetWindowSubclass(editor,Some(note_proc),1,formatted.as_ref() as *const _ as usize);SetWindowSubclass(preview,Some(preview_proc),1,clip.as_ref() as *const _ as usize);
-            Ok(Self{editor,preview,token:Cell::new(0),keys:Default::default(),clip,_ole:ole,
-                bg:Cell::new(0xffffff),formatted,retained_format:Default::default(),style:Cell::new((u32::MAX,u32::MAX,0)),load_error:Default::default()})
+            Ok(Self{editor,preview,token:Cell::new(0),keys:Default::default(),clip,hint,corner_size:Cell::new((0,0,0)),_ole:ole,
+                bg:Cell::new(0xffffff),formatted,retained_format:Default::default(),style:Cell::new((u32::MAX,u32::MAX,0,10)),load_error:Default::default()})
         }
     }
     pub fn layout(&self,page:&str,expanded:bool,bounds:(i32,i32,i32,i32),zoom:i32,appearance:(u32,u32,u32,u32))->bool{
-        let note=page=="notes";let clip=page=="clipboard"&&self.clip.image.borrow().is_some();
-        let (_,field,text,_)=appearance;
-        self.bg.set(field);self.clip.field.set(field);
-        unsafe{
-            if note&&self.style.get()!=(field,text,zoom){
+        if page=="notes" {
+            let (x,y,w,h)=bounds;
+            self.note_layout(expanded,crate::chrome::rect(x,y,w,h),zoom,appearance,10);
+            return true;
+        }
+        let clip=page=="clipboard" && self.clip.image.borrow().is_some();
+        self.clip.field.set(appearance.1);
+        unsafe { place(self.editor,bounds,false);place(self.preview,bounds,expanded && clip); }
+        clip
+    }
+
+    pub(crate) fn note_layout(&self, visible:bool, bounds:RECT, zoom:i32, appearance:crate::chrome::Colors, css_px:i32) {
+        let (bg,_,text,_)=appearance;
+        let field=crate::chrome::control(appearance);
+        self.bg.set(field);
+        let dpi=crate::shell::dpi(self.editor);
+        let scaled=(dpi as f32/96.0)*(zoom as f32/100.0);
+        let font_px=(css_px as f32*scaled).round() as i32;
+        let state=(field,text,zoom,font_px);
+        unsafe {
+            if self.style.get()!=state {
                 SendMessageW(self.editor,EM_SETBKGNDCOLOR,0,field as _);
-                let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>()as u32;
-                fmt.dwMask=CFM_COLOR|CFM_FACE|CFM_SIZE;fmt.crTextColor=windows::Win32::Foundation::COLORREF(text);fmt.yHeight=200;let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
-                if !self.formatted.get(){
+                if !self.formatted.get() {
+                    let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>()as u32;
+                    fmt.dwMask=CFM_COLOR|CFM_FACE|CFM_SIZE;fmt.crTextColor=windows::Win32::Foundation::COLORREF(text);fmt.yHeight=css_px*15;
+                    let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
                     SendMessageW(self.editor,EM_SETCHARFORMAT,SCF_ALL as _,&fmt as *const _ as _);
                     SendMessageW(self.editor,EM_SETCHARFORMAT,0,&fmt as *const _ as _);
                 }
-                SendMessageW(self.editor,EM_SETZOOM,zoom.clamp(50,200)as _,100);self.style.set((field,text,zoom));
+                SendMessageW(self.editor,EM_SETZOOM,zoom.clamp(50,200)as _,100);
+                let mut lf=LOGFONTW::default();lf.lfHeight= -font_px;lf.lfQuality=CLEARTYPE_QUALITY;
+                let face=wide("Segoe UI");lf.lfFaceName[..face.len()].copy_from_slice(&face);
+                let old=self.hint.font.replace(CreateFontIndirectW(&lf));if !old.is_null(){DeleteObject(old);}
+                self.hint.color.set(crate::chrome::mix(bg,text,162));
+                self.style.set(state);
             }
-            place(self.editor,bounds,expanded&&note);place(self.preview,bounds,expanded&&clip);
+            place(self.editor,(bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top),visible);
+            ShowWindow(self.preview,SW_HIDE);
+            if visible {
+                let mut area=RECT::default();GetClientRect(self.editor,&mut area);
+                let (w,h)=(bounds.right-bounds.left,bounds.bottom-bounds.top);
+                let diameter=(10.0*scaled).round() as i32;
+                if self.corner_size.get()!=(w,h,diameter) {
+                    let rgn=CreateRoundRectRgn(0,0,w+1,h+1,diameter,diameter);
+                    if !rgn.is_null(){
+                        if SetWindowRgn(self.editor,rgn,1)==0 {DeleteObject(rgn);}
+                        else {self.corner_size.set((w,h,diameter));}
+                    }
+                }
+                let px=(7.0*scaled).round() as i32;let py=(8.0*scaled).round() as i32;
+                InflateRect(&mut area,-px,-py);
+                SendMessageW(self.editor,0x00b4,0,&area as *const _ as _); // EM_SETRECTNP
+            }
         }
-        note||clip
     }
     pub(crate) fn format(&self)->Result<Option<String>,String>{
         if self.formatted.get(){return rich_text::snapshot(self.editor).map(Some);}
@@ -240,11 +318,12 @@ impl Controls{
         self.retained_format.borrow_mut().take();
         self.keys.borrow_mut().clear();self.load_error.borrow_mut().take();
         unsafe{SetWindowTextW(self.editor,wide("").as_ptr());}
-        let (_,color,_)=self.style.get();
+        let (_,color,zoom,font_px)=self.style.get();
         if color!=u32::MAX{unsafe{
             let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>() as _;
             fmt.dwMask=CFM_BOLD|CFM_ITALIC|CFM_UNDERLINE|CFM_STRIKEOUT|CFM_COLOR|CFM_SIZE|CFM_FACE;
-            fmt.crTextColor=windows::Win32::Foundation::COLORREF(color);fmt.yHeight=200;
+            fmt.crTextColor=windows::Win32::Foundation::COLORREF(color);
+            fmt.yHeight=(font_px as f32*15.0/(crate::shell::dpi(self.editor) as f32/96.0)/(zoom.max(1) as f32/100.0)).round() as i32;
             let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
             SendMessageW(self.editor,EM_SETCHARFORMAT,0,&fmt as *const _ as _);
         }}
@@ -255,7 +334,8 @@ impl Controls{
     }
     fn add(&self,cp:i32,id:&str,img:&RgbaImage)->Result<(),String>{
         let token=self.token.get().checked_add(1).ok_or("Too many open images.")?;
-        unsafe{insert(self.editor,cp,token,img,self.bg.get())?;}
+        let thumb=note_thumbnail(img);
+        unsafe{insert(self.editor,cp,token,&thumb,self.bg.get())?;}
         self.token.set(token);self.keys.borrow_mut().insert(token,id.to_owned());Ok(())
     }
     pub fn references(&self,id:&str)->bool{
@@ -358,12 +438,25 @@ pub(crate) fn command(ui:&mut Ui,id:u16,_code:u16)->bool{
     true
 }
 unsafe fn send_child_action(h:HWND,id:u16){PostMessageW(GetParent(h),WM_COMMAND,id as usize,0);}
-unsafe fn object_at(h:HWND,lp:LPARAM)->Option<usize>{
-    let point=windows_sys::Win32::Foundation::POINT{x:(lp as i16)as i32,y:((lp>>16)as i16)as i32};
-    let hit=SendMessageW(h,0xd7,0,&point as *const _ as _); // EM_CHARFROMPOS
-    let list=objects(h).ok()?;
-    list.iter().find(|(cp,_)|*cp as isize==hit).map(|o|o.0)
+unsafe fn image_hit(h:HWND,lp:LPARAM)->Option<(usize,bool)> {
+    let point=windows_sys::Win32::Foundation::POINT{x:lp as i16 as i32,y:(lp>>16) as i16 as i32};
+    let nearest=SendMessageW(h,0xd7,0,&point as *const _ as _); // EM_CHARFROMPOS
+    let mut numerator=0u32;let mut denominator=0u32;
+    SendMessageW(h,EM_GETZOOM,&mut numerator as *mut _ as _,&mut denominator as *mut _ as _);
+    let zoom=if denominator==0{1.0}else{numerator as f32/denominator as f32};
+    let scale=(crate::shell::dpi(h) as f32/96.0)*zoom;
+    for (cp,_) in objects(h).ok()?.into_iter().filter(|(cp,_)|(*cp as isize-nearest).abs()<=1) {
+        let mut p=windows_sys::Win32::Foundation::POINT::default();
+        SendMessageW(h,0xd6,&mut p as *mut _ as _,cp as _); // EM_POSFROMCHAR
+        let x=(point.x-p.x) as f32/scale-IMAGE_MARGIN_X as f32;
+        let y=(point.y-p.y) as f32/scale-IMAGE_MARGIN_Y as f32;
+        if (0.0..IMAGE_W as f32).contains(&x) && (0.0..IMAGE_H as f32).contains(&y) {
+            return Some((cp,x>=IMAGE_W as f32-20.0 && y<20.0));
+        }
+    }
+    None
 }
+unsafe fn object_at(h:HWND,lp:LPARAM)->Option<usize>{image_hit(h,lp).map(|(cp,_)|cp)}
 // Rich Edit reports UTF-16 positions including inline OLE images. Read the
 // original range directly so an adjacent image never shifts a link target.
 unsafe fn web_link(editor: HWND, range: CHARRANGE) -> Option<String> {
@@ -426,7 +519,24 @@ unsafe extern "system" fn note_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:usize
             }else{SendMessageW(h,EM_PASTESPECIAL,CF_UNICODETEXT.0 as _,0);}
             return 0;
         }
-        WM_LBUTTONDBLCLK=>{if let Some(cp)=object_at(h,lp){select(h,cp,cp+1);send_child_action(h,OPEN);return 0;}}
+        WM_LBUTTONDOWN=>{
+            RemovePropW(h,wide("BuddyPressedImage").as_ptr());
+            if let Some((cp,close))=image_hit(h,lp){
+                SetFocus(h);select(h,cp,cp+1);
+                SetPropW(h,wide("BuddyPressedImage").as_ptr(),(2*cp+usize::from(close)+1) as _);
+                return 0;
+            }
+        }
+        WM_LBUTTONUP=>{
+            let pressed=RemovePropW(h,wide("BuddyPressedImage").as_ptr()) as usize;
+            if pressed!=0{
+                if let Some((cp,close))=image_hit(h,lp){
+                    if 2*cp+usize::from(close)+1==pressed{select(h,cp,cp+1);send_child_action(h,if close{REMOVE}else{OPEN});}
+                }
+                return 0;
+            }
+        }
+        WM_LBUTTONDBLCLK if object_at(h,lp).is_some()=>return 0,
         WM_KEYDOWN if matches!(wp,66|73|85)&&GetKeyState(VK_CONTROL as i32)<0=>{(*formatted).set(true);}
         WM_KEYDOWN if wp==0x75=>{ // F6 and Shift+F6 select the next/previous inline object.
             if let Ok(list)=objects(h){
@@ -470,6 +580,20 @@ unsafe extern "system" fn note_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:usize
     }
     DefSubclassProc(h,msg,wp,lp)
 }
+unsafe extern "system" fn hint_proc(h:HWND,msg:u32,wp:usize,lp:isize,sub:usize,data:usize)->isize {
+    if msg==WM_NCDESTROY {RemoveWindowSubclass(h,Some(hint_proc),sub);}
+    let result=DefSubclassProc(h,msg,wp,lp);
+    if matches!(msg,WM_PAINT|WM_PRINT|WM_PRINTCLIENT) && GetWindowTextLengthW(h)==0 {
+        let hint=&*(data as *const NoteHint);
+        let dc=if msg==WM_PAINT {GetDC(h)} else {wp as HDC};
+        if !dc.is_null() && !hint.font.get().is_null() {
+            let mut r=RECT::default();SendMessageW(h,0xb2,0,&mut r as *mut _ as _); // EM_GETRECT
+            crate::chrome::text(dc,r,"Write down an idea, task, or reminder…",hint.font.get(),hint.color.get(),DT_LEFT|DT_TOP|DT_SINGLELINE);
+        }
+        if msg==WM_PAINT && !dc.is_null(){ReleaseDC(h,dc);}
+    }
+    result
+}
 unsafe extern "system" fn preview_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:usize,data:usize)->LRESULT{
     if msg==WM_NCDESTROY{RemoveWindowSubclass(h,Some(preview_proc),sub);}
     if matches!(msg,WM_PAINT|WM_PRINTCLIENT){
@@ -490,7 +614,7 @@ unsafe extern "system" fn preview_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:us
 
 impl Drop for Controls{
     fn drop(&mut self){unsafe{
-        RemoveWindowSubclass(self.preview,Some(preview_proc),1);RemoveWindowSubclass(self.editor,Some(note_proc),1);
+        RemoveWindowSubclass(self.preview,Some(preview_proc),1);RemoveWindowSubclass(self.editor,Some(note_proc),1);RemoveWindowSubclass(self.editor,Some(hint_proc),2);
     }}
 }
 
@@ -609,6 +733,20 @@ mod tests{
             let bytes=capture(controls.editor,420,200);optional_picture("inline-note.png",&bytes,420,200);
             let colors=|bytes:&[u8],color:[u8;3]|bytes.chunks_exact(4).filter(|p|p[..3]==color).count();
             let red=colors(&bytes,[0,0,255]);let green=colors(&bytes,[0,255,0]);assert!(red>200&&green>200,"red {red}, green {green}");
+            // Locate a pixel in the first image on the real Rich Edit surface.
+            // The remove affordance and the picture route to distinct commands.
+            let hit=bytes.chunks_exact(4).position(|pixel|pixel[..3]==[0,0,255]).unwrap();
+            let click=|x:i32,y:i32| (x as isize&65535)|((y as isize)<<16);
+            let near=click((hit%420)as i32+4,(hit/420)as i32+4);
+            assert_eq!(image_hit(controls.editor,near),Some((3,false)));
+            let mut origin=windows_sys::Win32::Foundation::POINT::default();
+            SendMessageW(controls.editor,0xd6,&mut origin as *mut _ as _,3);
+            for (point,action) in [(near,OPEN),(click(origin.x+62,origin.y+12),REMOVE)] {
+                SendMessageW(controls.editor,WM_LBUTTONDOWN,1,point);SendMessageW(controls.editor,WM_LBUTTONUP,0,point);
+                let mut message=MSG::default();
+                assert_ne!(PeekMessageW(&mut message,hwnd,WM_COMMAND,WM_COMMAND,PM_REMOVE),0);
+                assert_eq!(message.wParam,action as usize);
+            }
             select(controls.editor,0,0);SendMessageW(controls.editor,WM_KEYDOWN,0x75,0);
             assert_eq!(controls.selected_image(),Some((0,"first".to_owned())));
             SendMessageW(controls.editor,WM_KEYDOWN,0x75,0);

@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-work-native"
-version = "0.1.1-beta.44"
+version = "0.1.1-beta.45"
 dependencies = [
  "html5gum",
  "image",

@@ -27,7 +27,7 @@ pub fn list()->Result<Vec<Camera>,String>{
     }
 }
 struct Preview {id:String, source:IBaseFilter, control:IMediaControl, view:IVideoWindow, _graph:IGraphBuilder}
-impl Drop for Preview {fn drop(&mut self){unsafe{let _=self.control.Stop();let _=self.view.SetVisible(0);}}}
+impl Drop for Preview {fn drop(&mut self){unsafe{let _=self.control.Stop();let _=self.view.SetVisible(0);let _=self.view.SetOwner(0);}}}
 thread_local!{static PREVIEW:RefCell<Option<Preview>>=const{RefCell::new(None)};}
 pub fn stop(){PREVIEW.with(|p|{p.borrow_mut().take();});}
 pub fn release_hidden_preview() {
@@ -42,7 +42,7 @@ fn source(camera:&Camera)->windows::core::Result<IBaseFilter>{
     if let Some(s)=PREVIEW.with(|p|p.borrow().as_ref().filter(|p|p.id==camera.id).map(|p|p.source.clone())){return Ok(s);}
     unsafe{camera.moniker.BindToObject(&CreateBindCtx(0)?,None)}
 }
-pub fn preview(camera:&Camera)->Result<(),String>{
+pub fn preview(camera:&Camera,host:windows_sys::Win32::Foundation::HWND)->Result<(),String>{
     stop();
     let result=(|| -> windows::core::Result<Preview>{unsafe {
         let src=source(camera)?;
@@ -52,7 +52,11 @@ pub fn preview(camera:&Camera)->Result<(),String>{
         builder.RenderStream(Some(&PIN_CATEGORY_PREVIEW),&MEDIATYPE_Video,&src,None,None)?;
         let view:IVideoWindow=graph.cast()?;view.SetAutoShow(0)?;
         view.SetCaption(&BSTR::from("Buddy Camera Preview — Stop in Buddy"))?;
-        view.SetWindowStyle(view.WindowStyle()? & !0x80000)?;
+        if host.is_null(){view.SetWindowStyle(view.WindowStyle()? & !0x80000)?;}else{
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect,WS_CHILD,WS_CLIPSIBLINGS};
+            let mut r=Default::default();GetClientRect(host,&mut r);view.SetOwner(host as isize)?;
+            view.SetWindowStyle((WS_CHILD|WS_CLIPSIBLINGS) as i32)?;view.SetWindowPosition(0,0,r.right.max(1),r.bottom.max(1))?;
+        }
         let control:IMediaControl=graph.cast()?;
         let preview=Preview{id:camera.id.clone(),source:src,control,view,_graph:graph};
         preview.control.Run()?;preview.view.SetVisible(-1)?;Ok(preview)
@@ -112,3 +116,7 @@ pub fn set(camera:&Camera,key:&str,input:&str)->Result<(),String>{
     if actual.flags&mode==0 || (mode==2 && actual.value!=n){return Err("The camera did not confirm the requested setting.".into());}
     Ok(())
 }
+
+pub(super) fn previewing()->bool{PREVIEW.with(|s|s.borrow().is_some())}
+
+pub(super) fn size_preview(w:i32,h:i32){PREVIEW.with(|s|{if let Ok(b)=s.try_borrow(){if let Some(p)=b.as_ref(){unsafe{let _=p.view.SetWindowPosition(0,0,w,h);}}}})}

@@ -203,3 +203,12 @@ pub fn call_control(key:&str)->Result<String,String>{
         s.send(key).map(|v|status(&v))
     })
 }
+
+pub(super) fn editor_fields()->Vec<(usize,String,String,String)>{
+    STUDIO.with(|s|s.try_borrow().ok().and_then(|s|s.as_ref().filter(|studio|studio.view==View::Effects).map(|studio|{
+        studio.rows.iter().enumerate().map(|(i,(key,_))|(i,key.clone(),label(key),display(&studio.draft[key]))).collect()
+    })).unwrap_or_default())
+}
+pub(super) fn draft_state()->(bool,bool,String){
+    STUDIO.with(|s|s.try_borrow().ok().and_then(|s|s.as_ref().map(|st|(st.child.is_some(),st.draft!=st.state["effects"],st.selected_device.clone()))).unwrap_or_default())
+}

@@ -21,6 +21,8 @@ pub struct Frame {
     pub widget_view: RECT,
     pub progress: f32,
     pub body_alpha: f32,
+    pub header_progress: f32,
+    pub widgets_alpha: u8,
     pub expanded: bool,
     pub animating: bool,
     pub radius: i32,
@@ -97,7 +99,7 @@ impl Layout {
         let interp=|a:i32,b:i32|(a as f32+(b-a) as f32*p).round() as i32;
         let body=RECT {left:interp(self.closed.left,self.open.left),top:0,
                        right:interp(self.closed.right,self.open.right),bottom:interp(self.closed.bottom,self.open.bottom)};
-        Frame {body,expanded_body:self.open,progress:p,body_alpha:alpha,expanded,animating,
+        Frame {body,expanded_body:self.open,progress:p,body_alpha:alpha,header_progress:p,widgets_alpha:255,expanded,animating,
                radius:interp(self.closed_radius,self.open_radius),
                widgets:if !expanded && !animating{self.widgets.clone()}else{vec![]},widget_view:self.widget_view}
     }
@@ -122,6 +124,7 @@ fn bezier(t:f32, x1:f32,y1:f32,x2:f32,y2:f32)->f32 {
 struct Motion {
     from:f32,
     alpha_from:f32,
+    header_from:f32,
     target:f32,
     duration:f32,
     since:Instant,
@@ -131,6 +134,9 @@ struct Model {
     layout:Layout,
     p:f32,
     alpha:f32,
+    header:f32,
+    reveal_since:Option<Instant>,
+    widgets_alpha:u8,
     expanded:bool,
     motion:Option<Motion>,
 }
@@ -138,33 +144,57 @@ struct Model {
 impl Model {
     fn new(layout:Layout, expanded:bool)->Self {
         let endpoint=if expanded{1.0}else{0.0};
-        Self{layout,p:endpoint,alpha:endpoint,expanded,motion:None}
+        Self{layout,p:endpoint,alpha:endpoint,header:endpoint,reveal_since:None,widgets_alpha:255,expanded,motion:None}
     }
     fn sample(&mut self, now:Instant) {
-        let Some(m)=self.motion else{return};
-        let ms=now.saturating_duration_since(m.since).as_secs_f32()*1000.0;
-        let fade_end=if (m.target-m.alpha_from).abs()<0.001{0.0}else if self.expanded{160.0}else{100.0};
-        if ms>=m.duration.max(fade_end) {
-            self.p=m.target;self.alpha=m.target;self.motion=None;return
+        if let Some(m)=self.motion {
+            let ms=now.saturating_duration_since(m.since).as_secs_f32()*1000.0;
+            let shape=bezier(ms/m.duration,0.2,0.7,0.2,1.0);
+            self.p=m.from+(m.target-m.from)*shape;
+            // CSS transitions shorten reversals from the current displayed value.
+            // The persistent header and body opacity have their own easing clocks.
+            let css=|from:f32,duration:f32,delay:f32|{
+                let distance=(m.target-from).abs();
+                if distance==0.0 || ms-delay>=duration*distance{return m.target}
+                from+(m.target-from)*bezier((ms-delay)/(duration*distance),0.25,0.1,0.25,1.0)
+            };
+            self.header=css(m.header_from,180.0,0.0);
+            self.alpha=if self.expanded{css(m.alpha_from,120.0,40.0)}else{css(m.alpha_from,100.0,0.0)};
+            if ms>=m.duration && self.header==m.target && self.alpha==m.target {
+                self.p=m.target;
+                self.motion=None;
+                if !self.expanded && !self.layout.widgets.is_empty(){
+                    self.reveal_since=Some(now);
+                }else{self.widgets_alpha=255;}
+            }
         }
-        let t=bezier(ms/m.duration,0.2,0.7,0.2,1.0);
-        self.p=m.from+(m.target-m.from)*t;
-        let alpha_t=if self.expanded{(ms-40.0)/120.0}else{ms/100.0};
-        let fade=bezier(alpha_t,0.25,0.1,0.25,1.0);
-        self.alpha=m.alpha_from+(m.target-m.alpha_from)*fade;
+        if let Some(since)=self.reveal_since {
+            let t=now.saturating_duration_since(since).as_secs_f32()/0.100;
+            self.widgets_alpha=(255.0*bezier(t,0.25,0.1,0.25,1.0)).round() as u8;
+            if t>=1.0{self.reveal_since=None;}
+        }
     }
     fn request(&mut self,open:bool,immediate:bool,now:Instant) {
-        self.sample(now);
+        // Reverse from the last presented frame. No screen update occurs
+        // between the previous timer tick and this input event.
         let target=if open{1.0}else{0.0};
         if immediate {
-            self.motion=None;self.p=target;self.alpha=target;self.expanded=open;return
+            self.motion=None;self.p=target;self.alpha=target;self.header=target;self.expanded=open;
+            self.reveal_since=None;self.widgets_alpha=255;return
         }
         if self.expanded==open{return}
         let duration=((if open{220.0}else{180.0})*f32::abs(target-self.p)).max(60.0);
-        self.motion=Some(Motion{from:self.p,alpha_from:self.alpha,target,duration,since:now});
+        self.motion=Some(Motion{from:self.p,alpha_from:self.alpha,header_from:self.header,target,duration,since:now});
+        self.reveal_since=None;self.widgets_alpha=0;
         self.expanded=open;
     }
-    fn frame(&self)->Frame{self.layout.sample(self.p,self.alpha,self.expanded,self.motion.is_some())}
+    fn frame(&self)->Frame{
+        let mut frame=self.layout.sample(self.p,self.alpha,self.expanded,self.motion.is_some());
+        frame.header_progress=self.header;
+        frame.widgets_alpha=self.widgets_alpha;
+        frame
+    }
+    fn needs_tick(&self)->bool{self.motion.is_some() || self.reveal_since.is_some()}
 }
 
 thread_local! {
@@ -180,8 +210,28 @@ pub fn configure(layout:Layout,expanded:bool){
 pub fn request(open:bool,immediate:bool){
     MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.request(open,immediate,Instant::now());});
 }
+pub fn layout_ready(){
+    MODEL.with(|s|if let Some(motion)=s.borrow_mut().as_mut().and_then(|m|m.motion.as_mut()){
+        motion.since=Instant::now();
+    });
+}
+pub fn cards_presented(){
+    MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){
+        if m.reveal_since.is_some() && m.widgets_alpha==0{m.reveal_since=Some(Instant::now());}
+    });
+}
 pub fn sample(){
     MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.sample(Instant::now());});
+}
+#[cfg(test)]
+pub fn sample_after(elapsed:std::time::Duration){
+    MODEL.with(|s|if let Some(model)=s.borrow_mut().as_mut(){
+        let motion=model.motion.expect("motion capture needs an active transition");
+        model.sample(motion.since+elapsed);
+    });
+}
+pub fn needs_tick()->bool{
+    MODEL.with(|s|s.borrow().as_ref().is_some_and(Model::needs_tick))
 }
 pub fn frame()->Frame{
     MODEL.with(|s|s.borrow().as_ref().map(Model::frame).unwrap_or_else(||{
@@ -214,7 +264,7 @@ fn region(frame:&Frame)->HRGN {
 pub fn apply_region(hwnd:HWND,frame:&Frame){
     unsafe {
         let mask=region(frame);
-        if !mask.is_null() && SetWindowRgn(hwnd,mask,1)==0{DeleteObject(mask);}
+        if !mask.is_null() && SetWindowRgn(hwnd,mask,0)==0{DeleteObject(mask);}
     }
 }
 pub fn contains(frame:&Frame,x:i32,y:i32)->bool{
@@ -300,6 +350,30 @@ mod tests {
         assert_eq!((model.p,model.alpha,model.motion.is_none()),(1.0,1.0,true));
         model.request(false,true,start+Duration::from_millis(401));
         assert_eq!((model.p,model.alpha,model.motion.is_none()),(0.0,0.0,true));
+    }
+
+    #[test]
+    fn header_and_cards_have_independent_clocks_and_reduced_motion_settles_them() {
+        let start=Instant::now();
+        let at=|ms|start+Duration::from_millis(ms);
+        let layout=Layout::new(rect(0,0,1920,1080),96,100,Placement::Center,300,&[Widget::Note]);
+        let mut model=Model::new(layout,false);
+        model.request(true,false,start);
+        model.sample(at(35));
+        assert!(model.header>0.0 && model.header<model.p && model.alpha==0.0);
+        model.sample(at(220));
+        model.request(false,false,at(220));
+        model.sample(at(399));
+        assert!(model.frame().widgets.is_empty());
+        model.sample(at(400));
+        assert_eq!((model.frame().widgets.len(),model.frame().widgets_alpha),(1,0));
+        model.sample(at(450));
+        assert!((202..=207).contains(&model.frame().widgets_alpha));
+        model.request(true,false,at(450));
+        assert!(model.frame().widgets.is_empty());
+        model.request(false,true,at(451));
+        assert_eq!((model.frame().widgets.len(),model.frame().widgets_alpha),(1,255));
+        assert!(!model.needs_tick());
     }
 
     #[test]

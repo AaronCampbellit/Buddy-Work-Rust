@@ -6,6 +6,7 @@ use windows_sys::Win32::{
         Shell::{SetWindowSubclass, DefSubclassProc, RemoveWindowSubclass}, WindowsAndMessaging::*}
 };
 use crate::ui::wide;
+mod text;
 
 pub type Colors=(u32,u32,u32,u32);
 pub fn rect(x:i32,y:i32,w:i32,h:i32)->RECT { RECT{left:x,top:y,right:x+w,bottom:y+h} }
@@ -13,7 +14,12 @@ pub fn inset(r:RECT,n:i32)->RECT { RECT{left:r.left+n,top:r.top+n,right:r.right-
 pub fn mix(a:u32,b:u32,amount:u32)->u32 {
     [0,8,16].into_iter().map(|s| ((((a>>s)&255)*(255-amount)+((b>>s)&255)*amount+127)/255)<<s).sum()
 }
-pub fn control((bg,field,_,_):Colors)->u32 {if bg&255>150 {0xffffff} else {mix(field,0xffffff,6)}}
+pub fn control((bg,field,_,_):Colors)->u32 {match (bg,field){(0xfbf9f7,0xf4f1ed)=>0xffffff,(0x1b1712,0x27221b)=>0x2c2720,_=>field}}
+pub fn muted((bg,_,ink,_):Colors)->u32{match (bg,ink){(0xfbf9f7,0x272017)=>0x766d5f,(0x1b1712,0xfaf8f6)=>0xafa89c,_=>mix(bg,ink,170)}}
+pub fn divider((bg,_,ink,_):Colors)->u32{match bg{0xfbf9f7=>mix(bg,0x3d311c,36),0x1b1712=>mix(bg,0xffffff,31),_=>mix(bg,ink,41)}}
+thread_local!{static KEYBOARD:Cell<bool>=const{Cell::new(false)};}
+pub(crate) fn keyboard_navigation(active:bool){KEYBOARD.with(|k|k.set(active));}
+pub(crate) fn visible_focus()->bool{KEYBOARD.with(Cell::get)}
 pub fn fill(dc:HDC,r:RECT,color:u32) {unsafe{
     SetDCBrushColor(dc,color);FillRect(dc,&r,GetStockObject(DC_BRUSH));
 }}
@@ -25,6 +31,7 @@ pub fn panel(dc:HDC,r:RECT,radius:i32,inside:u32,edge:u32) {unsafe{
     SelectObject(dc,brush);SelectObject(dc,pen);
 }}
 pub fn text(dc:HDC,r:RECT,s:&str,font:HFONT,color:u32,flags:u32) {unsafe{
+    if text::draw(dc,r,s,font,color,flags){return}
     let previous=SelectObject(dc,font);SetBkMode(dc,TRANSPARENT as i32);SetTextColor(dc,color);
     let mut r=r;let data=wide(s);DrawTextW(dc,data.as_ptr(),(data.len()-1) as i32,&mut r,flags|DT_NOPREFIX|DT_END_ELLIPSIS);
     SelectObject(dc,previous);
@@ -48,6 +55,7 @@ unsafe extern "system" fn button_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize,id:usi
         }
     }
     match msg {
+        WM_LBUTTONDOWN|WM_LBUTTONDBLCLK=>keyboard_navigation(false),
         WM_MOUSEMOVE if !hovered(hwnd)=>{
             HOVERED.with(|v|{let old=v.replace(hwnd);if !old.is_null(){InvalidateRect(old,null(),0);}});
             let mut event=TRACKMOUSEEVENT{cbSize:std::mem::size_of::<TRACKMOUSEEVENT>() as _,dwFlags:TME_LEAVE,hwndTrack:hwnd,dwHoverTime:0};
@@ -68,10 +76,10 @@ pub fn install_button(hwnd:HWND){unsafe{SetWindowSubclass(hwnd,Some(button_proc)
 // Downsample the coverage in the current theme colors at the effective monitor DPI.
 #[repr(usize)]
 #[derive(Copy,Clone)]
-pub enum Icon{Home,Quick,Clipboard,Note,Bell,Widgets,Devices,Settings,Up,Down,Plus,Search,Pencil,Clock,More,Timer,Music,External,Pin,Save}
-fn atlas()->&'static image::RgbaImage {
-    static IMAGE:OnceLock<image::RgbaImage>=OnceLock::new();
-    IMAGE.get_or_init(||image::load_from_memory(include_bytes!("island-icons.png")).expect("Buddy icon atlas").to_rgba8())
+pub enum Icon{Home,Quick,Clipboard,Note,Bell,Widgets,Devices,Settings,Up,Down,Plus,Search,Pencil,Clock,More,Timer,Music,External,Pin,Save,Trash,Close,Calendar,BellOff,PanelTop,Palette,BellRing,Folder,Mic,Volume,Camera,Video,Check,Previous,Next,Pause,Play,Sliders,Refresh,RotateCcw,Flag,Notebook}
+fn atlas()->&'static image::GrayImage {
+    static IMAGE:OnceLock<image::GrayImage>=OnceLock::new();
+    IMAGE.get_or_init(||image::load_from_memory(include_bytes!("island-icons.png")).expect("Buddy icon atlas").into_luma8())
 }
 pub fn icon(dc:HDC,x:i32,y:i32,size:i32,id:Icon,ink:u32,base:u32){
     if size<1 || size>160{return}
@@ -81,7 +89,7 @@ pub fn icon(dc:HDC,x:i32,y:i32,size:i32,id:Icon,ink:u32,base:u32){
         let sx=ix*64/len;let ex=((ix+1)*64/len).max(sx+1);
         let sy=iy*64/len;let ey=((iy+1)*64/len).max(sy+1);
         let mut alpha=0;
-        for py in sy..ey {for px in sx..ex {alpha+=u32::from(atlas.get_pixel(offset+px as u32,py as u32)[3]);}}
+        for py in sy..ey {for px in sx..ex {alpha+=u32::from(atlas.get_pixel(offset+px as u32,py as u32)[0]);}}
         let c=mix(base,ink,alpha/((ex-sx)*(ey-sy)) as u32);
         pixels[iy*len+ix]=((c&255)<<16)|(c&0xff00)|((c>>16)&255);
     }}

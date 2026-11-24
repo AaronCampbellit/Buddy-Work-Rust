@@ -86,29 +86,22 @@ fn model(ui:&Ui,k:Kind)->Content{
         }
         Kind::Note=>if let Some(row)=note_row(ui){
             m.id=identity(ui,k);m.title=row[1].clone();m.body=row[2].clone();m.pinned=row[3]=="1";
-            m.has_reminder=!row[5].is_empty();m.meta=if m.has_reminder {reminder_text(&row[5])}else{"No reminder".into()};
+            m.has_reminder=!row[5].is_empty();m.meta=if m.has_reminder {Ui::formatted_note_date(&row[5])}else{"mm/dd/yyyy,  --:-- --".into()};
+            m.extra=Ui::formatted_note_date(&row[6]);
             m.format=inline_images::saved_format(&ui.records,&m.id);
             m.placements=inline_images::placements(row,ui.records.get(&inline_images::offset_key(&row[0])));
         },
         Kind::Clip=>if let Some(r)=clip_row(ui){
             m.id=identity(ui,k);m.kind=get(r,0).to_owned();m.pinned=get(r,3)=="1";
-            m.title=match m.kind.as_str(){"image"=>"Clipboard image","link"=>"Clipboard link",_=>"Clipboard text"}.into();
+            m.title=match m.kind.as_str(){"image"=>"Image","link"=>"Link",_=>"Text"}.into();
+            let stamp=Ui::formatted_note_date(get(r,2));
+            m.extra=stamp.rsplit_once(", ").map_or(stamp.as_str(),|(_,time)|time).to_owned();
             if m.kind=="image"{m.image=get(r,1).into();m.meta=format!("{} × {}",get(r,4),get(r,5));}
             else{m.body=get(r,1).into();}
         },
     }
     m
 }
-fn reminder_text(stamp:&str)->String{
-    use windows_sys::Win32::{Foundation::{FILETIME,SYSTEMTIME},System::Time::{FileTimeToSystemTime,SystemTimeToTzSpecificLocalTime}};
-    let Some(t)=stamp.parse::<u64>().ok().and_then(|n|n.checked_mul(10000)).and_then(|n|n.checked_add(116444736000000000)) else{return "Reminder set".into()};
-    let ft=FILETIME{dwLowDateTime:t as u32,dwHighDateTime:(t>>32)as u32};
-    let mut utc=SYSTEMTIME::default();let mut st=SYSTEMTIME::default();
-    unsafe{if FileTimeToSystemTime(&ft,&mut utc)!=0&&SystemTimeToTzSpecificLocalTime(null(),&utc,&mut st)!=0{
-        return format!("Reminder · {:04}-{:02}-{:02} {:02}:{:02}",st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute);
-    }} "Reminder set".into()
-}
-
 // Each control is a real tab stop with a Windows accessibility name.
 #[derive(Clone,Copy)]struct Spec{ id:u16, label:&'static str, x:i32,y:i32,w:i32,h:i32 }
 macro_rules! c {($id:literal,$label:literal,$x:literal,$y:literal,$w:literal,$h:literal)=>{
@@ -118,10 +111,17 @@ const CAMERA:&[Spec]=&[c!(110,"Pause camera",140,6,28,28),c!(111,"Standby camera
 const FOCUS:&[Spec]=&[c!(201,"Open Pomodoro in Buddy",13,12,202,30),c!(202,"Start",24,143,66,27),c!(203,"Skip Pomodoro phase",95,143,32,27),c!(204,"Reset Pomodoro",132,143,32,27),
     c!(205,"25 Focus",24,175,50,20),c!(206,"5 Short",79,175,42,20),c!(207,"15 Long",126,175,46,20)];
 const WATCH:&[Spec]=&[c!(301,"Open Stopwatch in Buddy",13,12,203,30),c!(302,"Start",24,143,66,27),c!(303,"Lap",95,143,50,27),c!(304,"Reset Stopwatch",150,143,32,27)];
-const NOTE:&[Spec]=&[c!(401,"Open note in Buddy",12,9,145,28),c!(402,"Pin",165,9,51,28),c!(403,"Delete",222,9,57,28),
-    c!(413,"More",306,9,76,28),c!(411,"Note title",16,54,368,31),c!(412,"Note body",16,93,368,266)];
-const CLIP:&[Spec]=&[c!(501,"Open clipboard in Buddy",12,9,167,28),c!(502,"Copy",16,294,69,31),c!(503,"Open",91,294,80,31),
-    c!(504,"Save PNG",177,294,83,31),c!(505,"Pin",16,335,70,29),c!(506,"Remove",92,335,78,29),c!(507,"Hide card",177,335,83,29),c!(508,"Clipboard content",20,106,360,163)];
+const NOTE:&[Spec]=&[
+    c!(401,"Open note in Buddy",13,12,160,33),c!(413,"More note actions",356,12,31,33),
+    c!(402,"Pin note",13,55,97,33),c!(403,"Delete note",116,55,100,33),
+    c!(411,"Note title",20,99,289,16),c!(412,"Note body",14,124,372,229),
+    c!(404,"Reminder date and time",13,358,168,25),c!(405,"Remove reminder",186,358,65,25),
+];
+const CLIP:&[Spec]=&[
+    c!(501,"Open clipboard in Buddy",13,12,194,33),c!(502,"Copy item",16,61,368,105),
+    c!(503,"Open",280,169,24,24),c!(504,"Save PNG",305,169,24,24),
+    c!(505,"Pin",330,169,24,24),c!(506,"Remove",355,169,24,24),c!(507,"Hide card",356,12,31,33),
+];
 fn specs(k:Kind)->&'static[Spec]{match k{Kind::Camera=>CAMERA,Kind::Focus=>FOCUS,Kind::Watch=>WATCH,Kind::Note=>NOTE,Kind::Clip=>CLIP}}
 
 struct Thumbnail {width:i32,height:i32,bgra:Vec<u8>}
@@ -129,13 +129,20 @@ impl Thumbnail {
     fn load(ui:&Ui,id:&str)->Option<Self>{
         let rgba=workspace::widget_thumbnail(ui,id,720,400).ok()?;
         let (width,height)=(rgba.width()as i32,rgba.height()as i32);
-        let mut bgra=rgba.into_raw();for p in bgra.chunks_exact_mut(4){p.swap(0,2);}
+        let mut bgra=rgba.into_raw();let field=ui.appearance.1;
+        for pixel in bgra.chunks_exact_mut(4){
+            let alpha=u32::from(pixel[3]);
+            if alpha!=255{for (channel,value) in pixel[..3].iter_mut().enumerate(){
+                let base=(field>>(channel*8))&255;*value=((u32::from(*value)*alpha+base*(255-alpha)+127)/255) as u8;
+            }}
+            pixel.swap(0,2);
+        }
         Some(Self{width,height,bgra})
     }
 }
 struct Card {kind:Kind, handle:HWND,rich:Option<Controls>, controls:Vec<(Spec,HWND)>, data:Content, image:Option<Thumbnail>, unscrolled:Bounds, area:Bounds, scroll_y:i32,watch_sample:Option<(std::time::Instant,u64)>}
 struct Strip {handle:HWND,parent:HWND,cards:Vec<Card>, viewport:Bounds, offset:i32, scale:f32, palette:(u32,u32,u32,u32),
-    fonts:[HFONT;6], previous:HWND,next:HWND, shown:bool, nav_bounds:[Bounds;2], notice:Option<(Kind,String,std::time::Instant)>}
+    fonts:[HFONT;8], previous:HWND,next:HWND, shown:bool, opacity:u8, nav_bounds:[Bounds;2], notice:Option<(Kind,String,std::time::Instant)>}
 struct Draft {id:String,previous_title:String,previous_body:String,previous_images:Vec<Placement>,previous_format:Option<String>,title:String,body:String,images:Vec<Placement>,format:Option<String>}
 struct Event {id:u16,kind:Kind,identity:String}
 thread_local! {
@@ -176,7 +183,19 @@ impl Strip{
         let arrow=|id,label|child(h,"BUTTON",label,id,WS_TABSTOP|BS_OWNERDRAW as u32,0);
         let prev=arrow(PREVIOUS,"Previous widgets");let next=arrow(NEXT,"Next widgets");
         Some(Self{handle:h,parent:owner,previous:prev,next,cards:vec![],viewport:Bounds::default(),offset:0,scale:0.0,
-            palette:(0,0,0,0),fonts:[null_mut();6],shown:false,nav_bounds:[Bounds::default();2],notice:None})
+            palette:(0,0,0,0),fonts:[null_mut();8],shown:false,opacity:255,nav_bounds:[Bounds::default();2],notice:None})
+    }
+    unsafe fn set_opacity(&mut self,alpha:u8){
+        if self.opacity==alpha{return}
+        let style=GetWindowLongW(self.handle,GWL_EXSTYLE) as u32;
+        if alpha<255 {
+            if style&WS_EX_LAYERED==0{SetWindowLongW(self.handle,GWL_EXSTYLE,(style|WS_EX_LAYERED) as i32);}
+            SetLayeredWindowAttributes(self.handle,0,alpha,LWA_ALPHA);
+        }else if style&WS_EX_LAYERED!=0{
+            SetWindowLongW(self.handle,GWL_EXSTYLE,(style&!WS_EX_LAYERED) as i32);
+            RedrawWindow(self.handle,null(),null_mut(),RDW_INVALIDATE|RDW_ALLCHILDREN);
+        }
+        self.opacity=alpha;
     }
     unsafe fn add_card(&mut self,kind:Kind)->Option<Card>{
         let h=child(self.handle,CARD_CLASS,match kind{Kind::Camera=>"Camera call controls",Kind::Focus=>"Pomodoro side widget",Kind::Watch=>"Stopwatch side widget",Kind::Note=>"Note side widget",Kind::Clip=>"Clipboard side widget"},0,WS_CLIPCHILDREN,WS_EX_CONTROLPARENT);
@@ -186,9 +205,11 @@ impl Strip{
             if s.id==BODY{return (s,rich.as_ref().unwrap().editor);}
             let edit=matches!(s.id,TITLE|BODY|508);
             let styles=if !edit{BS_OWNERDRAW as u32}else if s.id==508{(ES_READONLY|ES_MULTILINE|ES_AUTOVSCROLL)as u32|WS_VSCROLL}else if s.id==BODY{(ES_MULTILINE|ES_WANTRETURN|ES_AUTOVSCROLL)as u32|WS_VSCROLL}else{ES_AUTOHSCROLL as u32};
-            let btn=child(h,if edit{"EDIT"}else{"BUTTON"},if edit{""}else{s.label},s.id,WS_TABSTOP|styles,if edit{WS_EX_CLIENTEDGE}else{0});
-            SendMessageW(btn,WM_SETFONT,self.fonts[0]as usize,0);
-            if edit{SendMessageW(btn,0x00c5,if s.id==TITLE{32768}else{256*1024},0);SendMessageW(btn,0x1501,1,wide(s.label).as_ptr()as isize);}
+            let btn=child(h,if edit{"EDIT"}else{"BUTTON"},if edit{""}else{s.label},s.id,WS_TABSTOP|styles,if s.id==508{WS_EX_CLIENTEDGE}else{0});
+            SendMessageW(btn,WM_SETFONT,self.fonts[if s.id==TITLE{4}else{0}]as usize,0);
+            if !edit{crate::chrome::install_button(btn);}
+            if s.id==502{windows_sys::Win32::UI::Shell::SetWindowSubclass(btn,Some(clip_preview_proc),0xB065,0);}
+            if edit{SendMessageW(btn,0x00c5,if s.id==TITLE{32768}else{256*1024},0);SendMessageW(btn,0x1501,1,wide(if s.id==TITLE{"Untitled note"}else{s.label}).as_ptr()as isize);}
             (s,btn)
         }).collect();
         Some(Card{kind,handle:h,rich,controls,data:Content::default(),image:None,unscrolled:Bounds::default(),area:Bounds::default(),scroll_y:0,watch_sample:None})
@@ -199,8 +220,8 @@ impl Strip{
         let restyle=self.scale!=scale||self.palette!=ui.appearance;
         if restyle{
             self.scale=scale;self.palette=ui.appearance;
-            let fresh=[font(map_dip(13,scale),500),font(map_dip(18,scale),650),font(map_dip(40,scale),680),font(map_dip(9,scale),400),font(map_dip(11,scale),650),font(map_dip(16,scale),400)];
-            for card in &self.cards{for &(spec,h) in &card.controls{if spec.id!=BODY{SendMessageW(h,WM_SETFONT,fresh[0]as usize,0);}}}
+            let fresh=[font(map_dip(13,scale),500),font(map_dip(18,scale),650),font(map_dip(42,scale),660),font(map_dip(9,scale),400),font(map_dip(11,scale),650),font(map_dip(16,scale),400),font(map_dip(11,scale),500),font(map_dip(8,scale),400)];
+            for card in &self.cards{for &(spec,h) in &card.controls{if spec.id!=BODY{SendMessageW(h,WM_SETFONT,fresh[if spec.id==TITLE{4}else{0}]as usize,0);}}}
             for h in [self.previous,self.next]{SendMessageW(h,WM_SETFONT,fresh[1]as usize,0);}
             for old in std::mem::replace(&mut self.fonts,fresh){if !old.is_null(){DeleteObject(old);}}
         }
@@ -213,6 +234,7 @@ impl Strip{
             let mut b=Bounds::rect(r);b.x-=view.x;b.y-=view.y;
             if b!=c.unscrolled{c.unscrolled=b;geometry=true;}
             let data=model(ui,k);
+            if k==Kind::Clip && data.kind!=c.data.kind{geometry=true;}
             if k==Kind::Watch {
                 let active=data.running && b.intersect(Bounds{x:self.offset,y:0,w:view.w,h:view.h}).is_some();
                 if active {
@@ -221,7 +243,7 @@ impl Strip{
                 }else if c.watch_sample.take().is_some(){KillTimer(c.handle,3);}
             }
             if data!=c.data||restyle{
-                if data.image!=c.data.image{c.image=if data.image.is_empty(){None}else{Thumbnail::load(ui,&data.image)};}
+                if data.image!=c.data.image || (restyle && !data.image.is_empty()){c.image=if data.image.is_empty(){None}else{Thumbnail::load(ui,&data.image)};}
                 if k==Kind::Note{
                     let pending=DRAFT.with(|d|d.borrow().as_ref().is_some_and(|s|s.id==data.id));
                     if !pending{
@@ -276,10 +298,19 @@ impl Strip{
             for &(s,h) in &card.controls{
                 let y=p(s.y)-card.scroll_y;
                 if s.id==BODY {if let Some(rich)=&card.rich{
-                    rich.layout("notes",true,(p(s.x),y,p(s.w),p(s.h)),(100.0*self.scale).round()as i32,self.palette);
+                    let dpi=crate::shell::dpi(card.handle) as f32/96.0;
+                    rich.note_layout(true,crate::chrome::rect(p(s.x),y,p(s.w),p(s.h)),(100.0*self.scale/dpi).round() as _,self.palette,13);
                     continue;
                 }}
-                MoveWindow(h,p(s.x),y,p(s.w),p(s.h),0);
+                let x=if s.id==503 && card.data.kind!="image"{305}else{s.x};
+                MoveWindow(h,p(x),y,p(s.w),p(s.h),0);
+                if s.id==502{
+                    let rounded=CreateRoundRectRgn(0,0,p(s.w)+1,p(s.h)+p(15),p(26),p(26));
+                    let clip=CreateRectRgn(0,0,p(s.w),p(s.h));
+                    if !rounded.is_null() && !clip.is_null(){CombineRgn(rounded,rounded,clip,RGN_AND);}
+                    if !clip.is_null(){DeleteObject(clip);}
+                    if !rounded.is_null() && SetWindowRgn(h,rounded,0)==0{DeleteObject(rounded);}
+                }
             }
             InvalidateRect(card.handle,null(),0);
         }
@@ -323,14 +354,22 @@ fn button<'a>(c:&Card,s:Spec)->(&'a str,bool){
         110=>(if d.running{"Pause camera"}else{"Resume live camera"},d.actions_enabled),
         111=>(s.label,d.actions_enabled&&d.kind!="standby"),
         202|302=>(if d.running{"Pause"}else{"Start"},true),303=>("Lap",d.running),
-        402|505=>(if d.pinned{"Unpin"}else{"Pin"},true),
-        503=>match d.kind.as_str(){"image"=>("View image",true),"link"=>("Open link",true),_=>("Rewrite",true)},
+        402=>(if d.pinned{"Unpin note"}else{"Pin note"},true),
+        405=>(if d.has_reminder{"Remove reminder"}else{""},d.has_reminder),
+        505=>(if d.pinned{"Unpin"}else{"Pin"},true),
+        502=>(match d.kind.as_str(){"image"=>"Copy image","link"=>"Open link",_=>"Copy text"},true),
+        503=>(match d.kind.as_str(){"image"=>"Open image","link"=>"Copy link",_=>"Rewrite text"},true),
         504=>(if d.kind=="image"{"Save PNG"}else{""},d.kind=="image"),
         506=>(s.label,!d.pinned),508=>(if d.kind=="image"{""}else{s.label},d.kind!="image"),
         _=>(s.label,true),
     }
 }
 
+pub fn set_opacity(alpha:u8){
+    STRIP.with(|s|if let Ok(mut state)=s.try_borrow_mut(){
+        if let Some(strip)=state.as_mut().filter(|strip|strip.shown){unsafe{strip.set_opacity(alpha);}}
+    });
+}
 pub fn sync(ui:&mut Ui){
     let geometry=island::frame();
     let view=Bounds::rect(&geometry.widget_view);
@@ -339,6 +378,7 @@ pub fn sync(ui:&mut Ui){
         STRIP.with(|s|{
             if let Ok(mut state)=s.try_borrow_mut(){if let Some(strip)=state.as_mut(){if strip.shown{unsafe{
                     ShowWindow(strip.handle,SW_HIDE);
+                    strip.set_opacity(255);
                     for c in &mut strip.cards{if c.watch_sample.take().is_some(){KillTimer(c.handle,3);}}
                 }strip.shown=false;}}}
         });
@@ -348,7 +388,7 @@ pub fn sync(ui:&mut Ui){
         let Ok(mut b)=s.try_borrow_mut()else{return};
         if b.as_ref().is_some_and(|s|s.parent!=ui.hwnd.0){if let Some(old)=b.take(){destroy(old);}}
         if b.is_none(){*b=unsafe{Strip::new(ui.hwnd.0)};}
-        if let Some(strip)=b.as_mut(){unsafe{strip.update(ui,view,&geometry.widgets);}}
+        if let Some(strip)=b.as_mut(){unsafe{strip.set_opacity(geometry.widgets_alpha);strip.update(ui,view,&geometry.widgets);}}
     });
 }
 fn destroy(s:Strip){unsafe{DestroyWindow(s.handle);for f in s.fonts{if !f.is_null(){DeleteObject(f);}}}}
@@ -393,6 +433,9 @@ unsafe fn symbol(dc:HDC,r:Bounds,id:u16,color:u32){
     let ink=CreatePen(PS_SOLID,((r.w+2)/10).max(1),color);let old=SelectObject(dc,ink);let brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
     let path=|points:&[(i32,i32)]|{if let Some(&(a,b))=points.first(){MoveToEx(dc,x(a),y(b),null_mut());for &(c,d)in &points[1..]{LineTo(dc,x(c),y(d));}}};
     match id{
+        510=>{Rectangle(dc,x(3),y(3),x(22),y(22));Ellipse(dc,x(7),y(6),x(12),y(11));path(&[(4,19),(10,13),(13,16),(17,11),(21,15)]);}
+        511=>{path(&[(14,5),(17,2),(22,4),(23,8),(18,13),(14,14)]);path(&[(10,19),(7,22),(2,20),(1,16),(6,11),(10,10)]);path(&[(8,16),(16,8)]);}
+        512=>{path(&[(4,7),(4,4),(20,4),(20,7)]);path(&[(12,4),(12,21)]);path(&[(8,21),(16,21)]);}
         109=>path(&[(5,3),(21,12),(5,21),(5,3)]),
         110=>{path(&[(7,4),(7,20)]);path(&[(17,4),(17,20)]);}
         111=>{Rectangle(dc,x(2),y(4),x(22),y(18));path(&[(8,21),(16,21)]);path(&[(9,8),(9,14)]);path(&[(15,8),(15,14)]);}
@@ -424,7 +467,6 @@ unsafe fn paint_card(strip:&Strip,c:&Card,dc:HDC){
         fill(dc,rect(85,19,4,4),accent,p(5));line(&content.meta,94,0,46,40,3,accent);
         fill(dc,rect(210,11,1,18),edge,0);
     }else{
-        if !matches!(c.kind,Kind::Focus|Kind::Watch){panel(dc,rect(13,52,374,338),field,edge,p(9));}
         match c.kind{
             Kind::Focus|Kind::Watch=>{
                 let lap_count=if c.kind==Kind::Watch&&content.extra!="0 laps"{content.body.lines().count().min(3)as i32}else{0};
@@ -452,38 +494,136 @@ unsafe fn paint_card(strip:&Strip,c:&Card,dc:HDC){
                 }
             }
             Kind::Note=>{
-                if content.has_reminder && !strip.notice.as_ref().is_some_and(|(k,_,t)|*k==Kind::Note&&t.elapsed().as_secs()<4){line(&content.meta,18,365,360,21,0,subtle);}
+                let face=crate::chrome::control(strip.palette);
+                let focused=GetFocus();
+                panel(dc,rect(13,94,301,25),face,if focused==GetDlgItem(c.handle,TITLE as i32){accent}else{edge},p(5));
+                panel(dc,rect(13,123,374,231),face,if c.rich.as_ref().is_some_and(|r|r.editor==focused){accent}else{edge},p(6));
+                print(dc,&content.extra,rect(318,94,69,25).win(),strip.fonts[3],subtle,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
             }
-            Kind::Clip=>{line(&content.title,23,62,275,30,1,text);line(&content.meta,24,98,260,22,0,subtle);}
+            Kind::Clip=>{
+                panel(dc,rect(15,60,370,139),field,if content.pinned{crate::chrome::mix(surface,accent,105)}else{edge},p(14));
+                let indicator=rect(26,176,11,11);let kind=match content.kind.as_str(){"image"=>510,"link"=>511,_=>512};
+                symbol(dc,indicator,kind,subtle);
+                line(&content.title,40,173,26,16,7,subtle);
+                line(&content.extra,68,173,105,16,7,subtle);
+            }
             Kind::Camera=>{}
         }
     }
-    if let Some(image)=&c.image{
-        let area=rect(24,124,352,153);
-        let scale=(f64::from(area.w)/f64::from(image.width)).min(f64::from(area.h)/f64::from(image.height));
-        let (w,h)=((f64::from(image.width)*scale)as i32,(f64::from(image.height)*scale)as i32);
-        let mut info=BITMAPINFO::default();info.bmiHeader.biSize=std::mem::size_of::<BITMAPINFOHEADER>()as u32;
-        info.bmiHeader.biWidth=image.width;info.bmiHeader.biHeight= -image.height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
-        SetStretchBltMode(dc,HALFTONE);
-        StretchDIBits(dc,area.x+(area.w-w)/2,area.y+(area.h-h)/2,w,h,0,0,image.width,image.height,image.bgra.as_ptr().cast(),&info,DIB_RGB_COLORS,SRCCOPY);
-    }else if !content.image.is_empty(){
-        line("Image preview unavailable",23,155,342,25,0,subtle);
-    }
     if let Some((kind,message,t))=&strip.notice{if *kind==c.kind&&t.elapsed().as_secs()<4{
-        if c.kind==Kind::Camera{line(message,6,20,94,18,0,accent);}else{line(message,18,366,280,18,0,accent);}
+        if c.kind==Kind::Camera{line(message,6,20,94,18,0,accent);}else if c.kind==Kind::Note{line(message,14,383,330,15,3,accent);}else if c.kind==Kind::Clip{line(message,16,203,363,19,3,accent);}else{line(message,18,366,280,18,0,accent);}
     }}
 }
+// The entire thumbnail (or text excerpt) is the primary accessible button.
+unsafe extern "system" fn clip_preview_proc(h:HWND,msg:u32,wp:usize,lp:isize,sub:usize,_:usize)->isize{
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc,RemoveWindowSubclass};
+    if msg==WM_CONTEXTMENU{SendMessageW(GetParent(h),WM_COMMAND,509,h as _);return 0;}
+    if msg==WM_NCDESTROY{RemoveWindowSubclass(h,Some(clip_preview_proc),sub);}
+    DefSubclassProc(h,msg,wp,lp)
+}
+
+unsafe fn draw_clip_item(strip:&Strip,card:&Card,d:&DRAWITEMSTRUCT){
+    use crate::chrome::{self,Icon};
+    let id=d.CtlID as u16;let dc=d.hDC;let r=Bounds::rect(&d.rcItem);
+    let (bg,field,ink,accent)=strip.palette;let p=|v|map_dip(v,strip.scale);
+    let muted=chrome::mix(bg,ink,162);let edge=chrome::mix(bg,ink,42);
+    let focus=d.itemState&ODS_FOCUS!=0 && d.itemState&windows_sys::Win32::UI::Controls::ODS_NOFOCUSRECT==0;
+    let hot=chrome::hovered(d.hwndItem)||d.itemState&ODS_SELECTED!=0;
+    let enabled=IsWindowEnabled(d.hwndItem)!=0;
+    if id==501||id==507{
+        fill(dc,r,bg,0);
+        if id==507 && !hot && !focus{return;}
+        let face=if hot{chrome::mix(bg,ink,18)}else{chrome::control(strip.palette)};
+        panel(dc,r,face,if focus{accent}else{edge},p(6));
+        if id==501{print(dc,"Open clipboard in Buddy",r.win(),strip.fonts[5],ink,DT_SINGLELINE|DT_CENTER|DT_VCENTER);}
+        else{chrome::icon(dc,(r.w-p(16))/2,(r.h-p(16))/2,p(16),Icon::Close,muted,face);}
+        return;
+    }
+    if id==502{
+        // WM_PRINT can include the square child rectangle outside its shaped
+        // HWND. Restore the exact card edge below those transparent corners.
+        fill(dc,r,bg,0);
+        panel(dc,Bounds{x:-p(1),y:-p(1),w:p(370),h:p(139)},field,if card.data.pinned{chrome::mix(bg,accent,105)}else{edge},p(14));
+        // Clip only the top corners. The lower image edge meets the flat action bar.
+        let saved=SaveDC(dc);
+        // GDI clipping regions use device coordinates. WM_PRINT offsets the
+        // viewport into a parent bitmap, whereas live button DCs start at zero.
+        let mut clip=[POINT{x:r.x,y:r.y},POINT{x:r.right()+1,y:r.bottom()+p(15)}];
+        LPtoDP(dc,clip.as_mut_ptr(),2);
+        let box_=CreateRoundRectRgn(clip[0].x,clip[0].y,clip[1].x,clip[1].y,p(26),p(26));
+        if !box_.is_null(){ExtSelectClipRgn(dc,box_,RGN_AND);DeleteObject(box_);}
+        let face=if hot&&card.data.kind!="image"{chrome::mix(field,ink,12)}else{field};
+        fill(dc,r,face,0);
+        if let Some(image)=&card.image{
+            let scale=(f64::from(r.w)/f64::from(image.width)).max(f64::from(r.h)/f64::from(image.height));
+            let (w,h)=((f64::from(image.width)*scale).ceil() as i32,(f64::from(image.height)*scale).ceil() as i32);
+            let mut info=BITMAPINFO::default();info.bmiHeader=BITMAPINFOHEADER{biSize:std::mem::size_of::<BITMAPINFOHEADER>()as u32,
+                biWidth:image.width,biHeight:-image.height,biPlanes:1,biBitCount:32,..Default::default()};
+            SetStretchBltMode(dc,HALFTONE);StretchDIBits(dc,(r.w-w)/2,(r.h-h)/2,w,h,0,0,image.width,image.height,
+                image.bgra.as_ptr().cast(),&info,DIB_RGB_COLORS,SRCCOPY);
+        }else if card.data.kind=="image"{
+            symbol(dc,Bounds{x:(r.w-p(20))/2,y:(r.h-p(20))/2,w:p(20),h:p(20)},510,muted);
+        }else{
+            let link=card.data.kind=="link";
+            let area=Bounds{x:p(10),y:p(9),w:r.w-p(20),h:p(if link{60}else{90})};
+            let flags=DT_LEFT|DT_WORDBREAK|DT_EDITCONTROL|DT_END_ELLIPSIS;
+            print(dc,&card.data.body,area.win(),strip.fonts[if link{4}else{6}],ink,flags);
+            if link{
+                let mut measure=area.win();let txt=wide(&card.data.body);let old=SelectObject(dc,strip.fonts[4]);
+                DrawTextW(dc,txt.as_ptr(),-1,&mut measure,DT_LEFT|DT_WORDBREAK|DT_CALCRECT|DT_NOPREFIX);SelectObject(dc,old);
+                let y=area.y+(measure.bottom-measure.top).min(area.h)+p(7);
+                print(dc,&card.data.body,Bounds{x:area.x,y,w:area.w,h:p(15)}.win(),strip.fonts[3],accent,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);
+            }
+        }
+        if focus{let mut rr=r.win();InflateRect(&mut rr,-p(3),-p(3));DrawFocusRect(dc,&rr);}
+        RestoreDC(dc,saved);
+        return;
+    }
+    let pinned=id==505 && card.data.pinned;
+    let face=if pinned{chrome::mix(field,accent,30)}else if hot&&enabled{chrome::mix(field,ink,14)}else{field};
+    let color=if !enabled{chrome::mix(field,muted,94)}else if pinned{accent}else if hot{ink}else{muted};
+    fill(dc,r,field,0);panel(dc,r,face,if focus{accent}else{face},p(6));
+    let glyph=match id{503 if card.data.kind=="link"=>Icon::Clipboard,503 if card.data.kind=="text"=>Icon::Pencil,503=>Icon::External,504=>Icon::Save,505=>Icon::Pin,_=>Icon::Close};
+    chrome::icon(dc,(r.w-p(14))/2,(r.h-p(14))/2,p(14),glyph,color,face);
+}
+
 unsafe fn owner_draw(d:&DRAWITEMSTRUCT){
     let h=d.hwndItem;STRIP.with(|slot|{let Ok(b)=slot.try_borrow()else{return};let Some(s)=b.as_ref()else{return};
         let (surface,field,text,accent)=s.palette;let r=Bounds::rect(&d.rcItem);let p=|v|map_dip(v,s.scale);
         let id=d.CtlID as u16;let primary=matches!(id,202|302);
-        let enabled=IsWindowEnabled(h)!=0;let active=d.itemState&ODS_SELECTED!=0;
+        let enabled=IsWindowEnabled(h)!=0;let hot=crate::chrome::hovered(h);let active=d.itemState&ODS_SELECTED!=0;
+        let focus=d.itemState&ODS_FOCUS!=0;
+        if (501..=507).contains(&id){
+            if let Some(card)=s.cards.iter().find(|c|c.kind==Kind::Clip){draw_clip_item(s,card,d);}
+            return;
+        }
+        if matches!(id,401..=405|413){
+            let muted=crate::chrome::mix(surface,text,162);
+            let edge=crate::chrome::mix(surface,text,42);
+            let face=if hot||active{crate::chrome::mix(surface,text,19)}else{crate::chrome::control(s.palette)};
+            fill(d.hDC,r,surface,0);
+            if id==413 && !hot && !focus{return;}
+            panel(d.hDC,r,face,if focus{accent}else{edge},p(6));
+            if matches!(id,404|405|413){
+                use crate::chrome::{icon,Icon};
+                let size=p(14);let cy=(r.h-size)/2;
+                let glyph=match id{404=>Icon::Bell,405=>Icon::BellOff,_=>Icon::More};
+                icon(d.hDC,p(7),cy,size,glyph,if id==404{accent}else{muted},face);
+                let info=if id==404{s.cards.iter().find(|c|c.kind==Kind::Note).map(|c|c.data.meta.as_str()).unwrap_or("")}
+                    else if id==405{"Remove"}else{""};
+                print(d.hDC,info,Bounds{x:p(27),y:0,w:r.w-p(if id==404{47}else{27}),h:r.h}.win(),s.fonts[3],muted,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS);
+                if id==404{icon(d.hDC,r.w-p(19),(r.h-p(12))/2,p(12),Icon::Calendar,muted,face);}
+            } else {
+                print(d.hDC,&window_text(h,100),r.win(),s.fonts[5],text,DT_CENTER|DT_SINGLELINE|DT_VCENTER);
+            }
+            return;
+        }
         let caption=match id{PREVIOUS=>"‹".into(),NEXT=>"›".into(),_=>window_text(h,100)};
         let fg=if !enabled{mix(text,field,67)}else if primary{if (accent&255)*299+((accent>>8)&255)*587+((accent>>16)&255)*114<149000{0xffffff}else{0x171307}}else{text};
         let outer=matches!(id,201|301|401|501);
         let preset=if matches!(id,205|206|207){s.cards.iter().find(|c|c.kind==Kind::Focus).is_some_and(|c|
             c.data.meta==match id{205=>"Focus",206=>"Short break",_=>"Long break"})}else{false};
-        let face=if active{mix(accent,field,63)}else if primary{accent}else if preset{mix(accent,field,93)}else if outer{if surface&255>150{0xffffff}else{field}}else{field};
+        let face=if active{mix(accent,field,63)}else if primary{accent}else if preset{mix(accent,field,93)}else if hot{mix(text,field,93)}else if outer{if surface&255>150{0xffffff}else{field}}else{field};
         let edge=if primary{accent}else if preset{mix(accent,field,52)}else{mix(text,field,82)};
         fill(d.hDC,r,if outer{surface}else{field},0);
         if matches!(id,110..=113){symbol(d.hDC,Bounds{x:r.x+(r.w-p(15))/2,y:r.y+(r.h-p(15))/2,w:p(15),h:p(15)},
@@ -579,6 +719,7 @@ unsafe extern "system" fn procedure(h:HWND,msg:u32,wp:usize,lp:isize)->isize{
         WM_DRAWITEM if lp!=0=>{owner_draw(&*(lp as *const DRAWITEMSTRUCT));1}
         WM_CTLCOLOREDIT|WM_CTLCOLORSTATIC=>{
             let brush=STRIP.with(|slot|{let b=slot.try_borrow().ok()?;let s=b.as_ref()?;let (_,field,text,_)=s.palette;
+                let field=if GetDlgCtrlID(lp as HWND)==TITLE as i32{crate::chrome::control(s.palette)}else{field};
                 SetBkColor(wp as _,field);SetTextColor(wp as _,text);SetDCBrushColor(wp as _,field);Some(GetStockObject(DC_BRUSH)as isize)});
             brush.unwrap_or_else(||DefWindowProcW(h,msg,wp,lp))
         }
@@ -589,6 +730,7 @@ unsafe extern "system" fn procedure(h:HWND,msg:u32,wp:usize,lp:isize)->isize{
             let notification=(wp>>16)as u16;
             if matches!(id,TITLE|BODY){
                 if notification==EN_CHANGE as u16{read_editor(h,true);}
+                if notification==EN_SETFOCUS as u16||notification==EN_KILLFOCUS as u16{InvalidateRect(h,null(),0);}
                 if notification==EN_KILLFOCUS as u16{PostMessageW(h,WM_TIMER,1,0);}
                 return 0;
             }
@@ -713,7 +855,7 @@ pub fn flush(ui:&mut Ui)->Result<(),String>{
     };
     if let Err(e)=apply(ui){DRAFT.with(|d|*d.borrow_mut()=Some(draft));return Err(e);}Ok(())
 }
-fn open(ui:&mut Ui,page:&'static str){shell::expand(ui,true);if ui.expanded{ui.navigate(page);}}
+fn open(ui:&mut Ui,page:&'static str){shell::expand_from_side(ui);if ui.expanded{ui.navigate(page);}}
 fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
     let r=note_row(ui).cloned().ok_or("This note is no longer shown.")?;
     let i=ui.records["notes"].iter().position(|n|n.first()==r.first()).ok_or("The note is gone.")?;
@@ -799,14 +941,20 @@ fn action(ui:&mut Ui,event:Event)->Result<String,String>{
         201|301=>{open(ui,"widgets");Ok(String::new())}
         202..=207|302..=304=>{let key=match event.id{202=>"pom",203=>"pom-skip",204=>"pom-reset",205=>"focus",206=>"short",207=>"long",302=>"watch",303=>"lap",_=>"reset"};core::timer_action(ui,key)}
         401..=410|413=>note_action(ui,event.id),
-        501=>{shell::expand(ui,true);workspace::open_widget(ui)?;Ok(String::new())}
-        502..=507=>{let key=match event.id{502=>"copy",503=>if model(ui,Kind::Clip).kind=="text"{"rewrite"}else{"open"},504=>"save",505=>"pin",506=>"remove",_=>"hide"};
+        501=>{shell::expand_from_side(ui);workspace::open_widget(ui)?;Ok(String::new())}
+        502..=507|509=>{
+            let item=clip_row(ui).ok_or("The clipboard widget is gone.")?;
+            let kind=get(item,0);
+            let key=match event.id{
+                502 if kind=="link"=>"open",502=>"copy",503 if kind=="link"=>"copy",503 if kind=="text"=>"rewrite",503=>"open",
+                504=>"save",505=>"pin",506=>"remove",507=>"hide",509 if kind=="image"=>"open",_=>return Ok(String::new()),
+            };
             if key=="hide"{
                 let old=ui.records.remove("clipboard_widget").ok_or("The clipboard widget is gone.")?;
                 if let Err(e)=ui.save(){ui.records.insert("clipboard_widget".into(),old);return Err(e);}
                 return Ok("Clipboard card hidden.".into());
             }
-            if key=="rewrite"{shell::expand(ui,true);}
+            if key=="rewrite"{shell::expand_from_side(ui);}
             workspace::widget_action(ui,key)
         }
         _=>Err("Unknown widget control.".into())
@@ -925,7 +1073,7 @@ mod tests {
             }
             let (px,py)=STRIP.with(|slot|{
                 let mut b=slot.borrow_mut();let s=b.as_mut().unwrap();let i=s.cards.iter().position(|c|c.kind==Kind::Clip).unwrap();
-                s.ensure(i,Spec{id:502,label:"Copy",x:168,y:145,w:80,h:90});let c=&s.cards[i];(c.area.x+200,c.area.y+199)
+                let preview=s.cards[i].controls.iter().find(|(s,_)|s.id==502).unwrap().0;s.ensure(i,preview);let c=&s.cards[i];(c.area.x+200,c.area.y+110)
             });
             assert_eq!(printed_pixel(strip,px,py),color,"WM_PRINT should render the protected thumbnail");
             let title=STRIP.with(|slot|{let mut b=slot.borrow_mut();let s=b.as_mut().unwrap();
@@ -951,6 +1099,15 @@ mod tests {
             let watch_button=GetDlgItem(watch,302);assert_ne!(GetWindowLongW(watch_button,GWL_STYLE)as u32&WS_TABSTOP,0);
             SendMessageW(watch_button,BM_CLICK,0,0);
             command(&mut ui,0);assert_eq!(number(&ui,"watchStart")>0,can_save);assert!(!ui.expanded);
+            let clip_card=STRIP.with(|state|state.borrow().as_ref().unwrap().cards.iter().find(|c|c.kind==Kind::Clip).unwrap().handle);
+            let preview=GetDlgItem(clip_card,502);
+            assert_eq!(window_text(preview,120),"Copy image");
+            assert_eq!(IsWindowEnabled(GetDlgItem(clip_card,506)),0,"pinned remove button must be disabled");
+            SendMessageW(preview,WM_CONTEXTMENU,preview as usize,-1);
+            let opened=EVENTS.with(|q|q.borrow_mut().pop_back()).unwrap();
+            assert_eq!(opened.id,509);assert_eq!(opened.identity,format!("image:{image_id}"));
+            let remove=Event{id:506,kind:Kind::Clip,identity:opened.identity};
+            assert!(action(&mut ui,remove).unwrap_err().contains("Unpin"));
             let stale=Event{id:505,kind:Kind::Clip,identity:"text:previous".into()};action(&mut ui,stale).unwrap();assert_eq!(get(clip_row(&ui).unwrap(),3),"1");
             island::configure(fixture(1100,144),false);sync(&mut ui);
             STRIP.with(|slot|{let s=slot.borrow();let s=s.as_ref().unwrap();assert_eq!(s.scale,1.5);assert!(s.offset<=s.max_offset());});

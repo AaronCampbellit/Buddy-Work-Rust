@@ -30,7 +30,8 @@ thread_local! {
     static CAMERAS:RefCell<Vec<physical::Camera>>=const{RefCell::new(Vec::new())};
     static SCAN:RefCell<Option<ocr::Scan>>=const{RefCell::new(None)};
 }
-pub use ocr::{Scan, Word};
+pub use ocr::Scan;
+#[cfg(test)] pub use ocr::Word;
 pub fn recognize_words(data:&[u8])->Result<Scan,String>{ocr::scan(data)}
 fn choose_image(ui:&Ui)->Result<Option<PathBuf>,String>{
     let mut buf=[0u16;32768];let filter:Vec<_>="Images\0*.png;*.jpg;*.jpeg;*.bmp\0\0".encode_utf16().collect();
@@ -104,7 +105,7 @@ pub fn action(ui:&mut Ui,page:&str,key:&str)->Result<String,String>{
             audio::apply(&r,key,&ui.input())?;refresh(ui,page)?;if let Some(i)=AUDIO.with(|a|a.borrow().iter().position(|n|n.id==r.id&&n.session==r.session)){ui.select_row(i);}Ok("Audio setting updated.".into())}
         "camera"=>{let c=CAMERAS.with(|a|a.borrow().get(index).cloned()).ok_or("Refresh cameras and select one.")?;
             match key{"select"=>{ui.set_detail(&c.name);Ok(String::new())},"ranges"=>{ui.set_detail(&physical::ranges(&c)?);Ok("Enter a value, auto or default, then choose the property to change.".into())},
-                "preview"=>{physical::preview(&c)?;Ok("Local camera preview is open. Choose Stop preview to release the camera.".into())},
+                "preview"=>{physical::preview(&c,unsafe{GetDlgItem(ui.hwnd.0,3480)})?;Ok("Preview active.".into())},
                 "pan"|"tilt"|"zoom"|"focus"|"exposure"|"brightness"|"contrast"|"saturation"|"sharpness"|"white balance"=>{physical::set(&c,key,&ui.input())?;ui.set_detail(&physical::ranges(&c)?);Ok("Camera setting updated.".into())},
                 _=>Err("Unknown camera control.".into())}}
         _=>Err("Unknown device page.".into())
@@ -115,3 +116,15 @@ pub fn leave(page:&str){scan_worker::cancel();if page=="camera"{physical::stop()
 pub fn restore(profile:&Path){studio::restore(profile);}
 pub fn activity()->Result<Value,String>{studio::activity()}
 pub fn call_control(key:&str)->Result<String,String>{studio::call_control(key)}
+
+pub(crate) fn audio_devices(input:bool)->Vec<(usize,audio::Row)>{
+    AUDIO.with(|a|a.borrow().iter().enumerate().filter(|(_,r)|
+        r.active && (r.flow==windows::Win32::Media::Audio::eCapture)==input
+    ).map(|(i,r)|(i,r.clone())).collect())
+}
+
+pub(crate) fn studio_fields()->Vec<(usize,String,String,String)>{studio::editor_fields()}
+pub(crate) fn studio_state()->(bool,bool,String){studio::draft_state()}
+pub(crate) fn camera_previewing()->bool{physical::previewing()}
+
+pub(crate) fn size_preview(w:i32,h:i32){physical::size_preview(w,h)}

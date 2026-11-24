@@ -56,13 +56,22 @@ pub fn palette(ui:&Ui)->(u32,u32,u32,u32){
         let mut light:u32=1;let mut size=4;
         RegGetValueW(HKEY_CURRENT_USER,wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize").as_ptr(),wide("AppsUseLightTheme").as_ptr(),RRF_RT_REG_DWORD,null_mut(),(&mut light as *mut u32).cast(),&mut size);
         let dark=match core::setting(ui,"theme","system"){"dark"=>true,"light"=>false,_=>light==0};
-        let (dark_accent,light_accent)=match core::setting(ui,"accent","cyan"){
-            "ocean"=>("#74b5ff","#124f9e"),"violet"=>("#bd9aff","#61349f"),"rose"=>("#ff9dbb","#982247"),
-            "forest"=>("#73dfb1","#096342"),"amber"=>("#f5c16b","#744707"),_=>("#25d8f5","#007f9c")
+        let (dark_accent,light_accent,hue)=match core::setting(ui,"accent","cyan"){
+            "ocean"=>("#74b5ff","#124f9e",Some(218.0)),"violet"=>("#bd9aff","#61349f",Some(265.0)),"rose"=>("#ff9dbb","#982247",Some(338.0)),
+            "forest"=>("#73dfb1","#096342",Some(157.0)),"amber"=>("#f5c16b","#744707",Some(36.0)),_=>("#25d8f5","#007f9c",None)
         };
-        let defaults=if dark{(0x1b1712,0x27221b,0xfaf8f6,dark_accent)}else{(0xfbf9f7,0xf4f1ed,0x272017,light_accent)};
+        let hsl=|h:f64,s:f64,l:f64|{
+            let channel=|n:f64|{let k=(n+h/30.0)%12.0;let a=s*l.min(1.0-l);
+                ((l-a*(k-3.0).min(9.0-k).clamp(-1.0,1.0))*255.0).round() as u32};
+            channel(0.0)|(channel(8.0)<<8)|(channel(4.0)<<16)
+        };
+        let (bg,field,text)=match (dark,hue){
+            (true,Some(h))=>(hsl(h,0.62,0.18),hsl(h,0.56,0.24),0xffffff),
+            (false,Some(h))=>(hsl(h,0.82,0.88),hsl(h,0.76,0.94),hsl(h,0.65,0.13)),
+            (true,None)=>(0x1b1712,0x27221b,0xfaf8f6),(false,None)=>(0xfbf9f7,0xf4f1ed,0x272017)
+        };
         let selected=|key,default|color_value(core::setting(ui,key,"")).unwrap_or(default);
-        (selected("customMain",defaults.0),selected("customField",defaults.1),selected("customTextColor",defaults.2),selected("customAccent",color_value(defaults.3).unwrap()))
+        (selected("customMain",bg),selected("customField",field),selected("customTextColor",text),selected("customAccent",color_value(if dark{dark_accent}else{light_accent}).unwrap()))
 
     }
 }
@@ -78,6 +87,7 @@ struct Interaction {
     pointer_seen:bool,
     inside_body:bool,
     inside_union:bool,
+    side_open_hold:bool,
     drag:Option<(i32,i32)>,
     resized_height:Option<i32>,
     last_widgets:Vec<island::Widget>,
@@ -131,23 +141,57 @@ pub fn position(ui:&mut Ui){
             host.bottom-host.top,SWP_NOACTIVATE|SWP_NOOWNERZORDER);}
     }
     ui.apply_appearance();
-    render_frame(ui);
+    if island::needs_tick() && reduce_motion(ui){
+        island::request(ui.expanded,true);
+        unsafe{KillTimer(ui.hwnd.0,MOTION_TIMER);}
+    }
+    render_frame(ui,true);
 }
-fn render_frame(ui:&mut Ui){
+fn render_frame(ui:&mut Ui,layout_changed:bool){
     let frame=island::frame();
-    crate::mask_workspace_for_animation(ui.hwnd.0,frame.animating);
+    let full_layout=layout_changed || !frame.animating;
+    if full_layout{
+        crate::mask_workspace_for_animation(ui.hwnd.0,frame.animating);
+    }
     island::apply_region(ui.hwnd.0,&frame);
-    ui.layout();
-    side_widgets::sync(ui);
+    if full_layout{
+        ui.layout();
+        if !frame.expanded && !frame.animating && unsafe{GetFocus()}==ui.hwnd.0{
+            unsafe{SetFocus(GetDlgItem(ui.hwnd.0,crate::ui::COMPACT as i32));}
+        }
+        side_widgets::sync(ui);
+    }else{
+        // The workspace was laid out at its full size when the transition began.
+        // Moving/repainting every live editor each frame causes missed first frames.
+        ui.layout_motion_header();
+    }
     unsafe{InvalidateRect(ui.hwnd.0,null(),0);}
 }
 
+#[cfg(test)]
+pub fn capture_transition_at(ui:&mut Ui,elapsed:Duration){
+    island::sample_after(elapsed);
+    render_frame(ui,false);
+}
 pub fn animate(ui:&mut Ui){
+    let moving=island::frame().animating;
     island::sample();
-    render_frame(ui);
-    if !island::frame().animating{unsafe{KillTimer(ui.hwnd.0,MOTION_TIMER);}}
+    if moving{
+        render_frame(ui,false);
+        // The first reveal can create an editor and several HWNDs. Its CSS
+        // opacity clock begins once the strip is actually on screen.
+        if !island::frame().animating{island::cards_presented();}
+    }else{side_widgets::set_opacity(island::frame().widgets_alpha);}
+    if !island::needs_tick(){unsafe{KillTimer(ui.hwnd.0,MOTION_TIMER);}}
 }
 
+pub fn motion_setting_changed(ui:&mut Ui){
+    if island::needs_tick() && reduce_motion(ui){
+        island::request(ui.expanded,true);
+        render_frame(ui,true);
+        unsafe{KillTimer(ui.hwnd.0,MOTION_TIMER);}
+    }
+}
 pub fn reduce_motion(ui:&Ui)->bool{
     let mut enabled=1i32;
     let known=unsafe{SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,(&mut enabled as *mut i32).cast(),0)}!=0;
@@ -163,27 +207,44 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     if !open && explicit{
         INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=false;i.hover_blocked_until=Some(Instant::now()+REOPEN_DELAY);});
     }
+    if open==ui.expanded{
+        if open && explicit{
+            ui.hidden_until=None;ui.suppressed=false;
+            unsafe{ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);SetForegroundWindow(ui.hwnd.0);}
+        }
+        return
+    }
     let opening=open && !ui.expanded;
     if opening {if let Err(reason)=side_widgets::flush(ui){ui.status(&reason);balloon(ui,"Buddy note",&reason);return}}
     if !open && ui.expanded {devices::leave(ui.page);ui.collapsed_at=Some(Instant::now());}
+    if !open{
+        unsafe{if IsChild(ui.hwnd.0,GetFocus())!=0{SetFocus(ui.hwnd.0);}}
+    }
     ui.expanded=open;ui.opened_by_hover=open && !explicit;
     ui.hidden_until=None;ui.suppressed=false;
-    INTERACTION.with(|i|{let mut i=i.borrow_mut();i.left_at=None;if opening{i.pointer_seen=i.inside_union;}if !open{i.pointer_seen=false;}});
+    INTERACTION.with(|i|{let mut i=i.borrow_mut();i.left_at=None;if opening{i.pointer_seen=i.inside_union;}if !open{i.pointer_seen=false;i.side_open_hold=false;}});
     if opening{
         let restore_home=ui.collapsed_at.is_some_and(|t|t.elapsed()>=Duration::from_secs(core::setting(ui,"retention","15").parse().unwrap_or(15)));
         if restore_home{ui.navigate("home");}
         if !ui.isolated && !ui.paused && ui.page=="home"{let _=crate::workspace::open_fresh(ui);}
     }
     island::request(open,reduce_motion(ui));
-    if frame.expanded!=open || frame.animating{render_frame(ui);}
+    if frame.expanded!=open || frame.animating{render_frame(ui,true);}
     unsafe{
         if open{SetTimer(ui.hwnd.0,2,50,None);}else{KillTimer(ui.hwnd.0,2);}
-        if island::frame().animating{SetTimer(ui.hwnd.0,MOTION_TIMER,15,None);}else{KillTimer(ui.hwnd.0,MOTION_TIMER);}
+        // Starting the clock before staging the controls can skip the first
+        // several frames, especially with a Rich Edit workspace.
+        island::layout_ready();
+        if island::needs_tick(){SetTimer(ui.hwnd.0,MOTION_TIMER,15,None);}else{KillTimer(ui.hwnd.0,MOTION_TIMER);}
         ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);
         if open && explicit{SetForegroundWindow(ui.hwnd.0);}
     }
 }
 pub fn expand(ui:&mut Ui,value:bool){change(ui,value,true);}
+pub fn expand_from_side(ui:&mut Ui){
+    expand(ui,true);
+    if ui.expanded{INTERACTION.with(|i|i.borrow_mut().side_open_hold=true);}
+}
 pub fn model_tick(ui:&mut Ui){
     let widgets=widget_list(ui);
     if INTERACTION.with(|i|i.borrow().last_widgets!=widgets){position(ui);}
@@ -298,7 +359,11 @@ fn focus_blocks(ui:&Ui)->bool{unsafe{
     let mut thread=GUITHREADINFO::default();thread.cbSize=std::mem::size_of_val(&thread) as u32;
     if GetGUIThreadInfo(0,&mut thread)!=0 &&
         (thread.flags&(GUI_INMENUMODE|GUI_POPUPMENUMODE|GUI_INMOVESIZE))!=0 && thread.hwndActive==ui.hwnd.0{return true}
-    let active=GetForegroundWindow();
+    let foreground=GetForegroundWindow();
+    // Windows can briefly report no foreground window during an activation
+    // change. A private desktop also has no system foreground. Preserve an
+    // actual keyboard focus on our active editor in either case.
+    let active=if foreground.is_null(){GetActiveWindow()}else{foreground};
     if active.is_null(){return false}
     if active!=ui.hwnd.0 {
         // File/confirmation/date pickers and Studio/markup windows are owned by
@@ -313,6 +378,12 @@ fn focus_blocks(ui:&Ui)->bool{unsafe{
     name=="edit" || name.starts_with("richedit") || name=="combobox" || name=="combolbox" || name=="sysdatetimepick32"
 }}
 impl Interaction {
+    fn side_hold(&mut self,body:bool,settled_open:bool)->bool{
+        // A side shortcut can move the animated header under a stationary
+        // pointer. Only a fresh entry into the settled panel releases its hold.
+        if body && !self.inside_body && settled_open{self.side_open_hold=false;}
+        self.side_open_hold
+    }
     fn pointer(&mut self,now:Instant,expanded:bool,body:bool,inside:bool,blocked:bool)->(bool,bool){
         let entered=body && !self.inside_body;
         if inside{self.pointer_seen=true;self.left_at=None;}
@@ -329,7 +400,8 @@ impl Interaction {
 pub fn pointer_at(ui:&mut Ui,body:bool,inside:bool){
     if ui.locked || ui.suppressed || ui.paused || ui.hidden_until.is_some(){return}
     let now=Instant::now();
-    let blocked=focus_blocks(ui);
+    let held=INTERACTION.with(|state|state.borrow_mut().side_hold(body,ui.expanded && !island::frame().animating));
+    let blocked=held || focus_blocks(ui);
     let (open,close)=INTERACTION.with(|i|i.borrow_mut().pointer(now,ui.expanded,body,inside,blocked));
     if open && core::setting(ui,"open","hover")=="hover"{change(ui,true,false);}
     else if close && ui.expanded{change(ui,false,false);}
@@ -459,6 +531,19 @@ mod pointer_tests {
         p.pointer(ms(1100),true,false,false,false);
         assert_eq!(p.pointer(ms(1399),true,false,false,false),(false,false));
         assert_eq!(p.pointer(ms(1400),true,false,false,false),(false,true));
+    }
+    #[test]
+    fn shortcut_open_holds_until_a_real_entry_into_the_settled_workspace(){
+        let now=Instant::now();
+        let mut p=Interaction{side_open_hold:true,..Interaction::default()};
+        assert!(p.side_hold(true,false));
+        p.pointer(now,true,true,true,true);
+        assert!(p.side_hold(true,true));
+        p.pointer(now,true,false,false,true);
+        assert!(!p.side_hold(true,true));
+        p.pointer(now,true,true,true,false);
+        p.pointer(now,true,false,false,false);
+        assert_eq!(p.pointer(now+GRACE,true,false,false,false),(false,true));
     }
     #[test]
     fn pin_and_explicit_collapse_do_not_trap_focus_or_immediately_reopen(){

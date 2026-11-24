@@ -9,6 +9,7 @@ use sha2::{Digest,Sha256};
 use std::{cell::RefCell,collections::HashMap,ffi::OsStr,fs,path::{Path,PathBuf},time::{SystemTime,UNIX_EPOCH}};
 use platform::Clip;
 pub(crate) use files::valid_url;
+pub(crate) fn copy_editor_text(ui:&Ui,value:&str)->Result<(),String>{platform::copy_text(ui.hwnd.0,value)}
 pub(crate) fn open_web_link(hwnd:windows_sys::Win32::Foundation::HWND,url:&str)->Result<(),String>{
     if !valid_url(url){return Err("Only HTTP and HTTPS links may be opened.".into());}
     platform::open(hwnd,OsStr::new(url))
@@ -64,6 +65,12 @@ pub fn widget_thumbnail(ui:&Ui,id:&str,max_w:u32,max_h:u32)->Result<image::RgbaI
     if scale>=1.{return Ok(image);}
     Ok(image::imageops::thumbnail(&image,(f64::from(w)*scale).round().max(1.)as u32,(f64::from(h)*scale).round().max(1.)as u32))
 }
+pub(crate) fn file_card_thumbnail(path:&Path)->Result<image::RgbaImage,String>{
+    let mut b=platform::thumbnail(path)?;
+    for pixel in b.pixels.chunks_exact_mut(4){pixel.swap(0,2);}
+    let image=image::RgbaImage::from_raw(b.width as u32,b.height as u32,b.pixels).ok_or("Invalid shell thumbnail.")?;
+    Ok(image::DynamicImage::ImageRgba8(image).thumbnail(96,96).into_rgba8())
+}
 pub fn visible_image_id(ui:&Ui,index:usize)->Option<String>{
     if ui.page!="clipboard"{return None;}
     let index=*indexes(ui,"clipboard").get(index)?;
@@ -76,8 +83,8 @@ pub fn current_clipboard_png(ui:&Ui)->Result<Vec<u8>,String>{
 pub fn attach_clipboard_image(ui:&mut Ui)->Result<String,String>{
     match platform::read_clip(ui.hwnd.0,true)?{Some(Clip::Image(b))=>store_image(ui,&b),_=>Err("Copy an image first.".into())}
 }
-pub fn view_image(ui:&mut Ui,id:&str)->Result<(),String>{let b=Bitmap::from_png(&image_png(ui,id)?)?;markup::show(&annotation_path(ui,id),b,true)}
-pub fn view_png(ui:&mut Ui,bytes:&[u8])->Result<(),String>{let id=format!("{:x}",Sha256::digest(bytes));markup::show(&annotation_path(ui,&id),Bitmap::from_png(bytes)?,false)}
+pub fn view_image(ui:&mut Ui,id:&str)->Result<(),String>{let b=Bitmap::from_png(&image_png(ui,id)?)?;markup::show(ui,&annotation_path(ui,id),b,true)}
+pub fn view_png(ui:&mut Ui,bytes:&[u8])->Result<(),String>{let id=format!("{:x}",Sha256::digest(bytes));markup::show(ui,&annotation_path(ui,&id),Bitmap::from_png(bytes)?,false)}
 fn indexes(ui:&Ui,page:&str)->Vec<usize>{
     let (q,kind)=TRACK.with(|t|{let state=t.borrow();(state.query.get(page).cloned().unwrap_or_default(),state.type_filter.clone())});
     ui.records.get(key(page)).into_iter().flatten().enumerate().filter(|(_,r)|{
@@ -107,6 +114,7 @@ fn open_clipboard_row(ui:&mut Ui,index:usize,row:&[String])->Result<(),String>{
     if ui.page!="clipboard"{return Err("Save the current note before opening Clipboard.".into());}
     ui.select_row(index);
     detail(ui,"clipboard",row);
+    ui.reveal_clipboard_card(index);
     Ok(())
 }
 pub fn open_widget(ui:&mut Ui)->Result<(),String>{
@@ -244,6 +252,7 @@ fn detail(ui:&Ui,page:&str,row:&[String]){
 pub fn render(ui:&mut Ui,page:&str)->String{
     let indexes=indexes(ui,page);if page=="clipboard"&&indexes.is_empty(){crate::inline_images::set_clipboard(ui,None);}let captions=indexes.iter().map(|i|caption(page,&ui.records[key(page)][*i])).collect::<Vec<_>>();
     ui.set_rows(&captions);ui.set_detail("");if let Some(i)=indexes.first(){ui.select_row(0);detail(ui,page,&ui.records[key(page)][*i]);}
+    ui.refresh_workspaces();
     match page{"clipboard"=>"Clipboard history","markup"=>"Choose a clipboard image, import a file, or paste an image.","quick"=>"Enter a website URL and label to create a pin.","files"=>"Drop files here to link them or save independent copies.","downloads"=>"Recent downloads and partial-file sizes.",_=>""}.into()
 }
 fn persist_rows(ui:&mut Ui,page:&str,edit:impl FnOnce(&mut Vec<Vec<String>>))->Result<(),String>{
@@ -270,13 +279,29 @@ fn import_file(ui:&mut Ui,path:&Path)->Result<(),String>{
     let (w,h)=reader.into_dimensions().map_err(|e|e.to_string())?;Bitmap::size(w as usize,h as usize)?;
     let mut pixels=image::load_from_memory(&data).map_err(|e|e.to_string())?.into_rgba8().into_raw();for px in pixels.chunks_exact_mut(4){px.swap(0,2);}
     let b=Bitmap{width:w as usize,height:h as usize,pixels};
-    let id=format!("{:x}",Sha256::digest(&data));markup::show(&annotation_path(ui,&id),b,false)
+    let id=format!("{:x}",Sha256::digest(&data));markup::show(ui,&annotation_path(ui,&id),b,false)
 }
 pub fn action(ui:&mut Ui,page:&str,action:&str)->Result<String,String>{
+    run_action(ui,page,action,None,page)
+}
+
+/// Native cards combine multiple record collections in one shelf. Resolve the
+/// card against its original collection without changing the visible workspace.
+pub(crate) fn card_action(ui:&mut Ui,page:&str,index:Option<usize>,action:&str)->Result<String,String>{
+    let visible_page=ui.page;
+    run_action(ui,page,action,index,visible_page)
+}
+
+fn run_action(ui:&mut Ui,page:&str,action:&str,card:Option<usize>,visible_page:&str)->Result<String,String>{
     let hwnd=ui.hwnd.0;
+    let current=|ui:&Ui|match card{
+        Some(i)=>ui.records.get(key(page)).and_then(|v|v.get(i)).cloned()
+            .map(|row|(i,row)).ok_or_else(||"This item is no longer available.".to_owned()),
+        None=>selected(ui,page),
+    };
     let action=if action=="activate"{
         if page=="clipboard"{
-            let (_,row)=selected(ui,page)?;
+            let (_,row)=current(ui)?;
             match get(&row,0){"image"=>"markup","link"=>"open",_=>"copy"}
         }else if page=="markup"{"markup"}else{"open"}
     }else{action};
@@ -287,13 +312,13 @@ pub fn action(ui:&mut Ui,page:&str,action:&str)->Result<String,String>{
             "Filter applied.".into()
         }
         "rewrite" if page=="clipboard"=>{
-            let (_,row)=selected(ui,page)?;
+            let (_,row)=current(ui)?;
             if get(&row,0)=="image"{return Err("Select clipboard text to rewrite.".into());}
             ui.navigate("rewrite");
             crate::activity::set_rewrite_draft(ui,get(&row,1));
             return Ok("Choose the rewrite you want to send through your Codex CLI.".into());
         }
-        "select"=>{let (_,r)=selected(ui,page)?;detail(ui,page,&r);return Ok(String::new());}
+        "select"=>{let (_,r)=current(ui)?;detail(ui,page,&r);return Ok(String::new());}
         "search"=>{let query=ui.input().trim().to_lowercase();TRACK.with(|t|{t.borrow_mut().query.insert(page.into(),query);});"Search applied.".into()}
         "refresh"=>{TRACK.with(|t|{let mut t=t.borrow_mut();t.query.remove(page);if page=="clipboard"{t.type_filter=None;}});if page=="downloads"&&!ui.isolated{let cleared_at=downloads_cleared_at(ui);let before=ui.records.get("downloads").cloned().unwrap_or_default();let changed=TRACK.with(|t|platform::downloads().is_some_and(|d|t.borrow_mut().downloads.refresh(&d,ui.records.entry("downloads".into()).or_default(),cleared_at)));if changed{if let Err(e)=ui.save(){ui.records.insert("downloads".into(),before);return Err(e);}}}"Updated.".into()}
         "pick"|"folder"|"copyfile"|"copyfolder"|"addpath" if page=="files"=>{
@@ -301,15 +326,19 @@ pub fn action(ui:&mut Ui,page:&str,action:&str)->Result<String,String>{
         "store" if page=="files"=>{let p=files::location(ui);fs::create_dir_all(&p).map_err(|e|e.to_string())?;platform::open(hwnd,p.as_os_str())?;"Opened saved files.".into()}
         "relocate" if page=="files"=>{let Some(dir)=platform::choose_folder(hwnd)else{return Ok("Canceled.".into())};files::relocate(ui,dir)?}
         "new" if page=="quick"=>{ui.set_input("");ui.set_detail("");return Ok("Enter the website URL and its display name.".into());}
-        "app"|"addweb" if page=="quick"=>{
-            let target=if action=="app"{let Some(p)=platform::choose_files(hwnd,false,true)?.into_iter().next()else{return Ok("Canceled.".into())};if !p.extension().is_some_and(|s|s.eq_ignore_ascii_case("exe")){return Err("Choose a Windows executable.".into());}p.to_string_lossy().into_owned()}else{let s=ui.input().trim().to_string();if !files::valid_url(&s){return Err("Enter a full HTTP or HTTPS URL.".into());}s};
+        "app"|"addapp"|"addweb" if page=="quick"=>{
+            let target=if action=="app"{let Some(p)=platform::choose_files(hwnd,false,true)?.into_iter().next()else{return Ok("Canceled.".into())};if !p.extension().is_some_and(|s|s.eq_ignore_ascii_case("exe")){return Err("Choose a Windows executable.".into());}p.to_string_lossy().into_owned()}else if action=="addapp"{
+                let path=PathBuf::from(ui.input().trim());
+                if !path.is_absolute()||!path.is_file()||!path.extension().is_some_and(|ext|ext.eq_ignore_ascii_case("exe")){return Err("Choose an existing Windows executable.".into());}
+                path.to_string_lossy().into_owned()
+            }else{let s=ui.input().trim().to_string();if !files::valid_url(&s){return Err("Enter a full HTTP or HTTPS URL.".into());}s};
             if ui.records.get("quick").is_some_and(|r|r.len()>=16){return Err("Quick Access holds 16 pins.".into());}
             let supplied=ui.detail();let label=if action=="app"{Path::new(&target).file_stem().unwrap_or_default().to_string_lossy().into_owned()}else if supplied.trim().is_empty(){target.clone()}else{supplied.trim().chars().take(120).collect()};
-            persist_rows(ui,"quick",|r|r.push(vec![target,label,if action=="app"{"app"}else{"web"}.into()]))?;"Pin added.".into()}
-        "remove"=>{let(i,row)=selected(ui,page)?;if page=="files"&&get(&row,2)=="copy"{return Err("Use Delete saved copy to remove this managed item.".into());}persist_rows(ui,key(page),|r|{r.remove(i);})?;if page=="clipboard"{sweep(ui);}"Removed.".into()}
-        "trash" if page=="files"=>{let(i,r)=selected(ui,page)?;files::trash(ui,i,&r)?}
-        "open"|"reveal" if matches!(page,"quick"|"downloads"|"files")=>{let(_,r)=selected(ui,page)?;files::open_selected(ui,page,&r,action=="reveal")?}
-        "copypath"|"copyitem"|"preview"=>{let(_,r)=selected(ui,page)?;let p=Path::new(get(&r,0));match action{"copypath"=>platform::copy_text(hwnd,get(&r,0))?,"copyitem"=>platform::copy_path_item(hwnd,p)?,_=>{
+            persist_rows(ui,"quick",|r|r.push(vec![target,label,if action=="addweb"{"web"}else{"app"}.into()]))?;"Pin added.".into()}
+        "remove"=>{let(i,row)=current(ui)?;if page=="files"&&get(&row,2)=="copy"{return Err("Use Delete saved copy to remove this managed item.".into());}persist_rows(ui,key(page),|r|{r.remove(i);})?;if page=="clipboard"{sweep(ui);}"Removed.".into()}
+        "trash" if page=="files"=>{let(i,r)=current(ui)?;files::trash(ui,i,&r)?}
+        "open"|"reveal" if matches!(page,"quick"|"downloads"|"files")=>{let(_,r)=current(ui)?;files::open_selected(ui,page,&r,action=="reveal")?}
+        "copypath"|"copyitem"|"preview"=>{let(_,r)=current(ui)?;let p=Path::new(get(&r,0));match action{"copypath"=>platform::copy_text(hwnd,get(&r,0))?,"copyitem"=>platform::copy_path_item(hwnd,p)?,_=>{
             if let Err(original_error)=import_file(ui,p) {
                 let image=platform::thumbnail(p).map_err(|_|original_error)?;
                 let bytes=image.png()?;view_png(ui,&bytes)?;
@@ -327,11 +356,11 @@ pub fn action(ui:&mut Ui,page:&str,action:&str)->Result<String,String>{
         "capture" if page=="clipboard"=>{if let Some(clip)=platform::read_clip(hwnd,false)?{remember(ui,clip)?;}"Clipboard checked.".into()}
         "paste" if page=="markup"=>{let Some(Clip::Image(img))=platform::read_clip(hwnd,true)? else{return Err("Copy an image first.".into())};remember(ui,Clip::Image(img))?;let id=get(&ui.records["clipboard"][0],1).to_owned();view_image(ui,&id)?;return Ok("Editor opened.".into());}
         "import" if page=="markup"=>{let Some(p)=platform::choose_files(hwnd,false,false)?.into_iter().next() else{return Ok("Canceled.".into());};import_file(ui,&p)?;return Ok("Editor opened.".into());}
-        "pin"=>{let(i,_)=selected(ui,page)?;persist_rows(ui,"clipboard",|rows|{let r=&mut rows[i];r.resize(6,String::new());r[3]=if r[3]=="1"{"0"}else{"1"}.into();})?;"Pin updated.".into()}
-        "widget"=>{let(_,r)=selected(ui,page)?;persist_rows(ui,"clipboard_widget",|v|*v=vec![r])?;"Clipboard widget updated.".into()}
+        "pin"=>{let(i,_)=current(ui)?;persist_rows(ui,"clipboard",|rows|{let r=&mut rows[i];r.resize(6,String::new());r[3]=if r[3]=="1"{"0"}else{"1"}.into();})?;"Pin updated.".into()}
+        "widget"=>{let(_,r)=current(ui)?;persist_rows(ui,"clipboard_widget",|v|*v=vec![r])?;"Clipboard widget updated.".into()}
         "unwidget"=>{persist_rows(ui,"clipboard_widget",Vec::clear)?;"Clipboard widget hidden.".into()}
         "copy"|"markup"|"save"|"ocr"|"open" if matches!(page,"clipboard"|"markup")=>{
-            let(_,r)=selected(ui,page)?;let value=get(&r,1);
+            let(_,r)=current(ui)?;let value=get(&r,1);
             if get(&r,0)=="image"{match action{
                 "copy"=>platform::copy_bitmap(hwnd,&Bitmap::from_png(&image_png(ui,value)?)?)?,
                 "markup"|"open"=>view_image(ui,value)?,
@@ -342,7 +371,7 @@ pub fn action(ui:&mut Ui,page:&str,action:&str)->Result<String,String>{
             return Ok("Done.".into());}
         _=>return Err("Workspace action is unavailable.".into())
     };
-    render(ui,page);Ok(message)
+    render(ui,visible_page);Ok(message)
 }
 pub fn drop_files(ui:&mut Ui,paths:Vec<PathBuf>)->Result<String,String>{
     if ui.page=="ocr" {

@@ -5,6 +5,14 @@ use windows_sys::Win32::{Foundation::HWND as Handle,Graphics::Gdi::*,UI::Windows
 use crate::{activity,chrome,core,devices,inline_images,storage,workspace};
 mod island_view;
 mod widgets_page;
+mod workspaces_page;
+mod notes_view;
+mod preferences;
+mod scroll_pane;
+mod devices_view;
+mod editor_views;
+mod home_media;
+mod notification_popup;
 use widgets_page::WidgetsPage;
 use island_view::*;
 
@@ -33,11 +41,19 @@ pub(crate) fn window_text(h:Handle,max:usize)->String{
         let n=GetWindowTextW(h,s.as_mut_ptr(),s.len() as i32).max(0) as usize;String::from_utf16_lossy(&s[..n])}
 }
 fn label(h:Handle,s:&str){unsafe{SetWindowTextW(h,wide(s).as_ptr());}}
-fn show(h:Handle,v:bool){unsafe{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}
+fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
 fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->Handle{
     unsafe{let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());SendMessageW(child,WM_SETFONT,font as usize,1);child}
 }
-fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{MoveWindow(h,x,y,w.max(1),ht.max(1),1);}}
+fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
+    let mut r=windows_sys::Win32::Foundation::RECT::default();
+    if GetWindowRect(h,&mut r)==0{return}
+    let mut point=windows_sys::Win32::Foundation::POINT{x:r.left,y:r.top};
+    ScreenToClient(GetParent(h),&mut point);
+    if (point.x,point.y,r.right-r.left,r.bottom-r.top)!=(x,y,w.max(1),ht.max(1)){
+        SetWindowPos(h,std::ptr::null_mut(),x,y,w.max(1),ht.max(1),SWP_NOACTIVATE|SWP_NOZORDER);
+    }
+}}
 pub struct Ui {
     pub hwnd:HWND,pub profile:PathBuf,pub records:storage::Records,pub page:&'static str,pub isolated:bool,
     pub(crate) read_error:Option<String>,pub(crate) paused:bool,pub(crate) expanded:bool,
@@ -48,6 +64,12 @@ pub struct Ui {
     navigation:Vec<&'static str>,pub(crate) nav:Handle,pub(crate) list:Handle,pub(crate) input_box:Handle,pub(crate) detail_box:Handle,
     title:Handle,input_label:Handle,detail_label:Handle,notice:Handle,more:Handle,more_go:Handle,compact:Handle,compact_tools:Handle,
     pub(crate) images:inline_images::Controls,
+    workspaces_page:std::cell::OnceCell<workspaces_page::WorkspacesPage>,
+    note_controls:std::cell::OnceCell<notes_view::NoteControls>,
+    preferences:std::cell::OnceCell<preferences::Preferences>,
+    home_media:std::cell::OnceCell<home_media::Controls>,
+    editor_views:std::cell::OnceCell<editor_views::EditorViews>,
+    devices_view:std::cell::OnceCell<devices_view::DevicesView>,
     widgets_page:std::cell::OnceCell<WidgetsPage>,
     tab_order:std::cell::RefCell<Vec<Handle>>,
     tabs:Vec<Handle>,header:Vec<Handle>,collapse:Handle,resize:Handle,home_pick:Handle,home_note:Option<String>,search_box:Handle,
@@ -89,10 +111,11 @@ impl Ui{
         let buttons=(0..PRIMARY).map(|n|button("",ACTION+n as u16)).collect::<Vec<_>>();
         if [nav,list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
         unsafe {SendMessageW(input_box,EM_SETLIMITTEXT,32768,0);SendMessageW(detail_box,EM_SETLIMITTEXT,256*1024,0);}
+        let home_note=records.get("settings").and_then(|rows|rows.iter().find(|r|r.first().is_some_and(|k|k=="homeNote"))).and_then(|r|r.get(1)).cloned();
         Ok(Self{hwnd,profile,records,page:"home",isolated,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
             hidden_until:None,camera_check:Instant::now(),call_state:None,locked:false,suppressed:false,new_note:false,dirty_note:false,due_note:None,active_note:None,search:String::new(),note_ids:vec![],
             last_removed:None,actions:vec![],navigation:PAGES.iter().map(|p|p.0).collect(),nav,list,input_box,detail_box,title,input_label,detail_label,notice,more,more_go,compact,compact_tools,buttons,
-            images,widgets_page:Default::default(),tab_order:Default::default(),tabs,header,collapse,resize,home_pick,home_note:None,search_box,fonts,appearance:(0xffffff,0xffffff,0x222222,0x814c18),font_size:100,zoom:100,quitting:false})
+            images,widgets_page:Default::default(),note_controls:Default::default(),workspaces_page:Default::default(),preferences:Default::default(),editor_views:Default::default(),home_media:Default::default(),devices_view:Default::default(),tab_order:Default::default(),tabs,header,collapse,resize,home_pick,home_note,search_box,fonts,appearance:(0xffffff,0xffffff,0x222222,0x814c18),font_size:100,zoom:100,quitting:false})
     }
     fn widgets_page(&self)->&WidgetsPage{
         self.widgets_page.get_or_init(||WidgetsPage::new(self.hwnd.0,self.fonts[0]))
@@ -159,13 +182,14 @@ impl Ui{
         if key=="new" && self.page=="notes" {crate::shell::focus(self.input_box);}
     }
     pub(crate) fn command(&mut self,id:u16,code:u16){
+        if self.home_media_command(id,code) || self.note_command(id,code) || self.handle_workspaces(id,code) || self.preference_command(id,code) || self.editor_command(id,code) || self.device_command(id,code){return}
         if inline_images::command(self,id,code) || WidgetsPage::command(self,id,code){return}
         if self.island_command(id,code){return}
         if id==NAV && code==LBN_SELCHANGE as u16{let index=unsafe{SendMessageW(self.nav,LB_GETCURSEL,0,0)};if let Some(&p)=self.navigation.get(index as usize){self.navigate(p);}}
         else if id==LIST && code==LBN_DBLCLK as u16 && matches!(self.page,"quick"|"files"|"downloads"|"clipboard"|"markup"){self.run_action("activate");}
         else if id==LIST && (code==LBN_SELCHANGE as u16 || code==LBN_DBLCLK as u16){self.run_action("select");}
         else if (id==INPUT||id==DETAIL||id==inline_images::NOTE_EDITOR) && self.page=="notes"{if code==EN_CHANGE as u16 && self.active_note.is_some(){self.dirty_note=true;}if code==EN_KILLFOCUS as u16 && self.dirty_note{if let Err(e)=core::save_note(self){self.error(&e)}}}
-        else if id==COMPACT_TOOLS {crate::shell::expand(self,true);self.navigate("notifications");}
+        else if id==COMPACT_TOOLS {notification_popup::toggle(self);}
         else if id==COMPACT {crate::shell::expand(self,true);}
         else if id==MORE_GO{let n=unsafe{SendMessageW(self.more,CB_GETCURSEL,0,0)};if n>=0{if let Some(&(key,_))=self.actions.get(n as usize+PRIMARY){self.run_action(key);}}}
         else if id>=ACTION && id<ACTION+PRIMARY as u16 {if let Some(&(key,_))=self.actions.get((id-ACTION) as usize){self.run_action(key);}}
@@ -192,7 +216,7 @@ impl Ui{
     }
     pub(crate) unsafe fn color(&self,msg:u32,dc:HDC,child:Handle)->isize{
         let (bg,field,text,accent)=self.appearance;
-        let base=if msg==WM_CTLCOLOREDIT{chrome::control(self.appearance)}else if msg==WM_CTLCOLORLISTBOX && child!=self.list{field}else{bg};
+        let base=if matches!(GetDlgCtrlID(child),3305|3306){field}else if msg==WM_CTLCOLOREDIT{chrome::control(self.appearance)}else if msg==WM_CTLCOLORLISTBOX && child!=self.list{field}else{bg};
         SetBkColor(dc,base);SetTextColor(dc,if child==self.title{accent}else{text});SetDCBrushColor(dc,base);
         GetStockObject(DC_BRUSH) as isize
     }

@@ -13,21 +13,21 @@ const CENTER:u32=DT_CENTER|DT_VCENTER|DT_SINGLELINE;
 const LEFT:u32=DT_LEFT|DT_VCENTER|DT_SINGLELINE;
 
 pub(super) fn fonts(scale:f32)->Vec<HFONT>{
-    [(11,400),(11,650),(18,650),(10,400),(14,650),(15,650),(16,650),(17,650)].into_iter().map(|(size,weight)|unsafe{
+    [(11,400),(11,650),(18,650),(10,400),(14,650),(15,650),(16,650),(17,650),(9,400),(22,660),(9,650),(11,580)].into_iter().map(|(size,weight)|unsafe{
         let mut lf=LOGFONTW::default();lf.lfHeight=-(size as f32*scale).round() as i32;
-        lf.lfWeight=weight;lf.lfQuality=CLEARTYPE_QUALITY;
-        let family=wide("Segoe UI");lf.lfFaceName[..family.len()].copy_from_slice(&family);CreateFontIndirectW(&lf)
+        lf.lfWeight=weight;lf.lfQuality=ANTIALIASED_QUALITY;
+        let family=wide("Segoe UI Variable Text");lf.lfFaceName[..family.len()].copy_from_slice(&family);CreateFontIndirectW(&lf)
     }).collect()
 }
 
 impl Ui {
     pub(super) fn scale(&self)->f32 {crate::shell::dpi(self.hwnd.0) as f32/96.0*self.zoom as f32/100.0}
-    fn px(&self,n:i32)->i32 {(n as f32*self.scale()).round() as i32}
+    pub(super) fn px(&self,n:i32)->i32 {(n as f32*self.scale()).round() as i32}
     fn home_record(&self)->Option<&Vec<String>>{
-        let id=self.home_note.as_ref()?;self.records.get("notes")?.iter().find(|r|r.first()==Some(id))
+        let id=self.home_note.as_ref()?;self.records.get("notes")?.iter().find(|r|r.len()>=7&&r.first()==Some(id))
     }
     fn media_visible(&self)->bool {self.page=="home" && activity::home_media().is_some()}
-    fn panel_width(&self,w:i32)->i32 {if self.media_visible(){(w-self.px(10))*57/100}else{w}}
+    pub(super) fn panel_width(&self,w:i32)->i32 {if self.media_visible(){(w-self.px(10))*57/100}else{w}}
 
     // Use the actual button as the menu anchor for keyboard and pointer activation alike.
     pub(super) fn choose(&self,anchor:Handle,labels:&[String])->Option<usize>{unsafe{
@@ -58,7 +58,7 @@ impl Ui {
         }
         if code!=BN_CLICKED as u16{return false}
         if let Some(tab)=id.checked_sub(TAB).and_then(|i|TABS.get(i as usize)){self.navigate(tab.0);return true}
-        if let Some(action)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){self.navigate(action.0);return true}
+        if let Some(action)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){if action.0=="notifications"{notification_popup::toggle(self)}else{self.navigate(action.0)}return true}
         match id{
             COLLAPSE=>crate::shell::expand(self,false),
             MORE_GO=>self.more_menu(),
@@ -67,7 +67,9 @@ impl Ui {
                 let notes=self.records.get("notes").into_iter().flatten().filter(|n|n.len()>=7).collect::<Vec<_>>();
                 choices.extend(notes.iter().map(|r|if r[1].is_empty(){"Untitled note".to_owned()}else{r[1].clone()}));
                 if let Some(i)=self.choose(self.home_pick,&choices){
-                    self.home_note=i.checked_sub(1).and_then(|i|notes.get(i)).map(|r|r[0].clone());self.layout();
+                    let next=i.checked_sub(1).and_then(|i|notes.get(i)).map(|r|r[0].clone());
+                    let old=self.home_note.clone();core::set(self,"homeNote",next.as_deref().unwrap_or(""));
+                    match self.save(){Ok(())=>self.home_note=next,Err(e)=>{core::set(self,"homeNote",old.as_deref().unwrap_or(""));self.error(&e);}}self.layout();
                 }
             }
             ACTION if self.page=="home"=>{
@@ -84,23 +86,42 @@ impl Ui {
         if body.right>body.left && body.bottom>body.top{return body}
         let mut r=RECT::default();unsafe{GetClientRect(self.hwnd.0,&mut r);}r
     }
+    pub(crate) fn layout_motion_header(&self){
+        let frame=crate::island::frame();
+        let body=self.body();let p=|n|self.px(n);
+        let surface_w=body.right-body.left;let surface_h=body.bottom-body.top;
+        let open=self.expanded||frame.animating;
+        let place=|handle,on,x,y,w,h|{
+            if on{pos(handle,body.left+x,body.top+y,w,h);}
+            show(handle,on);
+        };
+        place(self.compact,!open,0,0,surface_w,surface_h);
+        place(self.compact_tools,!open,surface_w-p(45),p(3),p(29),(surface_h-p(7)).min(p(34)));
+        let progress=frame.header_progress.clamp(0.,1.);
+        let header_pad=p(18+(12.0*progress).round() as i32);
+        for (i,tool)in self.header.iter().enumerate(){
+            let on=self.expanded || (frame.animating && i==0);
+            let offset=if self.expanded{p(37)*(3-i as i32)}else{0};
+            place(*tool,on,surface_w-header_pad-p(30)-offset,p(5+(3.0*progress).round() as i32),p(30),p(30));
+        }
+    }
     pub(crate) fn layout(&self){
         let frame=crate::island::frame();let body=self.body();
         let p=|n|self.px(n);
-        let surface_w=body.right-body.left;let surface_h=body.bottom-body.top;
+
         let content=if frame.animating{frame.expanded_body}else{body};
         let w=content.right-content.left;let h=content.bottom-content.top;
         let open=self.expanded || frame.animating;
         let home=open && self.page=="home";let notes=open && self.page=="notes";
-        let utility=open && !home && !notes && self.page!="widgets";let edit=notes && self.active_note.is_some();
+        let custom=workspaces_page::handles(self.page) || editor_views::handles(self.page) || matches!(self.page,"widgets"|"settings"|"audio"|"camera"|"studio"|"notifications");
+        let utility=open && !home && !notes && !custom;
         let place=|handle:Handle,on:bool,x:i32,y:i32,w:i32,h:i32|{
             let id=unsafe{GetDlgCtrlID(handle)};
             let origin=if workspace_child(id){content}else{body};
             if on {pos(handle,origin.left+x,origin.top+y,w,h);}
             show(handle,on);
         };
-        place(self.compact,!open,0,0,surface_w,surface_h);
-        place(self.compact_tools,!open,surface_w-p(45),p(3),p(29),(surface_h-p(7)).min(p(34)));
+        self.layout_motion_header();
         let gap=p(4);let inner=w-p(60);let tw=((inner-3*gap)/4).min(p(154));let start=(w-(tw*4+gap*3))/2;
         let configured=core::setting(self,"moduleOrder","");
         let mut order=Vec::with_capacity(4);
@@ -108,13 +129,6 @@ impl Ui {
             if let Some(i)=TABS.iter().position(|t|t.0==key){if !order.contains(&i){order.push(i);}}
         }
         for(i,tab)in order.iter().enumerate(){place(self.tabs[*tab],open,start+i as i32*(tw+gap),p(51),tw,p(31));}
-        let progress=frame.progress.clamp(0.,1.);
-        let header_pad=p(18+(12.0*progress).round() as i32);
-        for (i,tool)in self.header.iter().enumerate(){
-            let on=self.expanded || (frame.animating && i==0);
-            let offset=if self.expanded{p(37)*(3-i as i32)}else{0};
-            place(*tool,on,surface_w-header_pad-p(30)-offset,p(5+(3.0*progress).round() as i32),p(30),p(30));
-        }
         place(self.resize,open && !frame.animating,(w-p(70))/2,h-p(15),p(70),p(15));
         place(self.collapse,open,w-p(28),p(46),p(22),p(26));
         let left=p(30);let top=p(88);let bottom=h-p(17);let main_h=bottom-top;
@@ -122,35 +136,38 @@ impl Ui {
         let widget_bounds=rect(content.left+left,content.top+top,inner,main_h);
         if widgets_visible{self.widgets_page().layout(self,true,widget_bounds);}
         else if let Some(widgets)=self.widgets_page.get(){widgets.layout(self,false,widget_bounds);}
+        self.layout_home_media(home,widget_bounds);
         let panel_width=self.panel_width(inner);let note_w=panel_width-p(20);
         place(self.home_pick,home,left+p(10),top+p(12),note_w,p(27));
-        let sidebar=(inner*266/1000).max(p(150)).min(inner/2);
-        let right_x=left+sidebar+p(11);let right_w=inner-sidebar-p(11);
         let selected_home=self.home_record().is_some();
         let (x,y,bw,bh)=if selected_home {(left+p(10),top+p(48),note_w,main_h-p(58))}
             else{(left+(panel_width-p(101))/2,(top+p(39)+bottom-p(28))/2-p(2),p(101),p(28))};
         let textbox=|ctrl,on,x,y,w,h|{let n=p(3);place(ctrl,on,x+n,y+n,w-2*n,h-2*n);};
-        place(self.buttons[0],home||notes||utility,if home{x}else if notes{left+sidebar-p(99)}else{left},if home{y}else if notes{top}else{bottom-p(28)},
-            if home{bw}else if notes{p(89)}else{(inner-p(56))/4-p(4)},if home{bh}else{p(29)});
-        for i in 1..PRIMARY {
-            if home && i==2 && self.media_visible(){place(self.buttons[i],true,left+panel_width+p(20),top+p(60),inner-panel_width-p(30),p(40));}
-            else if notes {place(self.buttons[i],edit,right_x+(i as i32-1)*(right_w-p(36))/3,bottom-p(27),(right_w-p(36))/3-p(3),p(25));}
-            else {place(self.buttons[i],utility && self.actions.len()>i,left+i as i32*((inner-p(56))/4),bottom-p(28),(inner-p(56))/4-p(4),p(28));}
+        if !notes{
+            place(self.buttons[0],home||utility,if home{x}else{left},if home{y}else{bottom-p(28)},if home{bw}else{(inner-p(56))/4-p(4)},if home{bh}else{p(29)});
+            for i in 1..PRIMARY {
+                {place(self.buttons[i],utility && self.actions.len()>i,left+i as i32*((inner-p(56))/4),bottom-p(28),(inner-p(56))/4-p(4),p(28));}
+            }
+            place(self.more_go,utility && (self.actions.len()>PRIMARY || !self.related().is_empty()),w-p(65),bottom-p(28),p(34),p(27));
+            show(self.search_box,false);
+            let list_w=inner*41/100;
+            if utility{unsafe{SendMessageW(self.list,LB_SETITEMHEIGHT,0,p(28) as _);}}
+            place(self.list,utility,left,top+p(29),list_w,main_h-p(65));
+            let ux=left+list_w+p(12);let uw=inner-list_w-p(12);
+            textbox(self.input_box,utility,ux,top+p(22),uw,p(26));
+            let dy=top+p(71);let dh=main_h-p(108);
+            let has_images=self.images.layout(self.page,utility,(content.left+ux,content.top+dy,uw,dh),self.zoom,self.appearance);
+            textbox(self.detail_box,utility && !has_images,ux,dy,uw,dh);
         }
-        place(self.more_go,(notes && (edit||self.last_removed.is_some())) || (utility && (self.actions.len()>PRIMARY || !self.related().is_empty())),w-p(65),bottom-p(28),p(34),p(27));
-        place(self.search_box,notes,left+p(24),top+p(5),sidebar-p(134),p(20));
-        show(self.nav,false);show(self.more,false);
-        let item_height=if notes{44}else if self.page=="clipboard"{44}else{28};
-        unsafe{SendMessageW(self.list,LB_SETITEMHEIGHT,0,p(item_height) as _);}
-        let list_w=if notes{sidebar-p(9)}else{inner*41/100};
-        place(self.list,(notes && !self.note_ids.is_empty())||utility,left,if notes{top+p(35)}else{top+p(29)},list_w,main_h-if notes{p(35)}else{p(65)});
-        let ux=left+list_w+p(12);let uw=inner-list_w-p(12);
-        textbox(self.input_box,edit||utility,if notes{right_x}else{ux},if notes{top+p(4)}else{top+p(22)},if notes{right_w}else{uw},p(26));
-        let (dx,dy,dw,dh)=if notes{(right_x,top+p(34),right_w,main_h-p(66))}else{(ux,top+p(71),uw,main_h-p(108))};
-        let has_images=self.images.layout(self.page,edit||utility,(content.left+dx,content.top+dy,dw,dh),self.zoom,self.appearance);
-        textbox(self.detail_box,utility && !has_images,dx,dy,dw,dh);
+        let list_w=inner*41/100;let ux=left+list_w+p(12);let uw=inner-list_w-p(12);
         place(self.title,utility,left,top,list_w,p(24));place(self.input_label,utility,ux,top,uw,p(19));
         place(self.detail_label,utility,ux,top+p(50),uw,p(18));
+        show(self.more,false);show(self.nav,false);
+        self.layout_notes(notes,content);
+        self.layout_workspaces(open && workspaces_page::handles(self.page),widget_bounds);
+        self.layout_editors(open && editor_views::handles(self.page),widget_bounds);
+        self.layout_preferences(open && self.page=="settings",widget_bounds);
+        self.layout_device_view(open && matches!(self.page,"audio"|"camera"|"studio"|"notifications"),widget_bounds);
         let issue=self.read_error.is_some() || unsafe{!GetPropW(self.notice,wide("BuddyIssue").as_ptr()).is_null()};
         place(self.notice,open&&issue,left,bottom-p(18),inner-p(45),p(16));
         if !frame.animating {
@@ -160,9 +177,12 @@ impl Ui {
                 focus_order.extend(self.header.iter().copied());
                 focus_order.extend(order.iter().map(|i|self.tabs[*i]));
                 match self.page {
-                    "home"=>{focus_order.extend([self.home_pick,self.buttons[0],self.buttons[2]]);}
-                    "notes"=>{focus_order.extend([self.search_box,self.buttons[0],self.list,self.input_box,self.images.editor,
-                        self.buttons[1],self.buttons[2],self.buttons[3],self.more_go]);}
+                    "home"=>{focus_order.extend([self.home_pick,self.buttons[0]]);focus_order.extend(self.home_media_tabs());}
+                    "notes"=>{focus_order.extend(self.note_tab_stops());}
+                    page if editor_views::handles(page)=>focus_order.extend(self.editor_tab_stops()),
+                    "settings"=>focus_order.extend(self.preference_tab_stops()),
+                    "audio"|"camera"|"studio"|"notifications"=>focus_order.extend(self.device_tab_stops()),
+                    page if workspaces_page::handles(page)=>{focus_order.push(unsafe{GetDlgItem(self.hwnd.0,2200)});}
                     "widgets"=>{focus_order.push(unsafe{GetDlgItem(self.hwnd.0,1900)});}
                     _=>{focus_order.extend([self.list,self.input_box,self.detail_box,unsafe{GetDlgItem(self.hwnd.0,1561)}]);
                         focus_order.extend(self.buttons.iter().copied());focus_order.push(self.more_go);}
@@ -182,6 +202,7 @@ impl Ui {
                 self.tab_order.replace(focus_order);
             }
         }
+        crate::workspace_layout_changed(self.hwnd.0);
         self.redraw();
     }
 
@@ -194,7 +215,7 @@ impl Ui {
         let w=r.right-r.left;let h=r.bottom-r.top;
         let box_at=|x,y,w,h| rect(r.left+x,r.top+y,w,h);
         let frame=crate::island::frame();let progress=frame.progress.clamp(0.0,1.0);
-        let edge=mix(bg,ink,41);let muted=mix(bg,ink,165);
+        let edge=chrome::divider(self.appearance);let muted=chrome::muted(self.appearance);
         fill(dc,r,bg);
         let rad=p((20.0+6.0*progress) as i32);
         panel(dc,rect(r.left,r.top-rad,w,h+rad),rad,bg,edge);
@@ -206,6 +227,7 @@ impl Ui {
             if core::setting(self,run,"0")!="0" {let sec=timer/1000;center=format!("{:02}:{:02}",sec/60,sec%60);left_status=Some((Icon::Timer,label.to_owned()));break}
         }
         if left_status.is_none(){left_status=activity::home_media().map(|m|(Icon::Music,m));}
+        let progress=frame.header_progress.clamp(0.,1.);
         let header_height=p(39+(7.0*progress).round() as i32);
         let header_font=[4,5,6,7,2][(4.0*progress).round() as usize];
         text(dc,box_at(w/3,0,w/3,header_height),&center,self.fonts[header_font],ink,CENTER);
@@ -220,44 +242,30 @@ impl Ui {
         let p=|n|self.px(n);
         let (w,h)=(r.right-r.left,r.bottom-r.top);
         let box_at=|x,y,w,h|rect(r.left+x,r.top+y,w,h);
-        let (bg,field,ink,_)=self.appearance;let muted=mix(bg,ink,165);let edge=mix(bg,ink,41);
+        let (_,field,_,_)=self.appearance;let edge=chrome::divider(self.appearance);
         let inner=w-p(60);let top=p(88);let bottom=h-p(17);
         fill(dc,box_at(p(30),p(46),inner,p(1).max(1)),edge);
-        let sidebar=(inner*266/1000).max(p(150)).min(inner/2);
         if self.page=="widgets" {if let Some(widgets)=self.widgets_page.get(){widgets.paint(self,dc,box_at(p(30),top,inner,bottom-top));}}
         else if self.page=="home" {
             let panel_w=self.panel_width(inner);
             panel(dc,box_at(p(30),top+p(2),panel_w,bottom-top-p(2)),p(10),field,edge);
-            if self.media_visible(){panel(dc,box_at(p(40)+panel_w,top+p(2),inner-panel_w-p(10),bottom-top-p(2)),p(10),field,edge);
-                text(dc,box_at(p(50)+panel_w,top+p(12),inner-panel_w-p(35),p(25)),"Now playing",self.fonts[1],muted,LEFT);}
-        } else if self.page=="notes" {
-            let side=p(30)+sidebar;fill(dc,box_at(side,top,p(1),bottom-top),edge);
-            panel(dc,box_at(p(30),top,sidebar-p(105),p(29)),p(6),chrome::control(self.appearance),edge);
-            icon(dc,r.left+p(37),r.top+top+p(7),p(15),Icon::Search,muted,chrome::control(self.appearance));
-            if self.note_ids.is_empty(){
-                let cy=(top+p(35)+bottom)/2;
-                icon(dc,r.left+p(41),r.top+cy-p(8),p(20),Icon::Pencil,muted,bg);
-                let empty=if self.search.is_empty(){"No notes yet"}else{"No matching notes"};
-                text(dc,box_at(p(72),cy-p(12),sidebar-p(44),p(15)),empty,self.fonts[1],ink,LEFT);
-                if self.search.is_empty(){text(dc,box_at(p(72),cy+p(4),sidebar-p(44),p(13)),"Create a note to keep an idea close.",self.fonts[3],muted,LEFT);}
-            }
-            if self.active_note.is_none(){
-                let s="Select a note or create a new one.";let size=chrome::width(dc,s,self.fonts[3]);let x=(side+w-p(30)-size-p(28))/2;let cy=(top+bottom)/2;
-                icon(dc,r.left+x,r.top+cy-p(10),p(20),Icon::Clock,muted,bg);
-                text(dc,box_at(x+p(28),cy-p(12),size+p(5),p(24)),s,self.fonts[3],muted,LEFT);
-            }else{panel(dc,box_at(side+p(11),top+p(4),inner-sidebar-p(11),p(26)),p(5),chrome::control(self.appearance),edge);}
-        }
+            self.paint_home_media(dc,box_at(p(30),top,inner,bottom-top));
+        } else if self.page=="notes" { self.paint_notes(dc,r); }
+        else if editor_views::handles(self.page){self.paint_editors(dc,box_at(p(30),top,inner,bottom-top));}
+        else if self.page=="settings" { self.paint_preferences(dc,box_at(p(30),top,inner,bottom-top)); }
+        else if matches!(self.page,"audio"|"camera"|"studio"|"notifications"){self.paint_device_view(dc,box_at(p(30),top,inner,bottom-top));}
 
     }
 
     pub(crate) fn draw_item(&self,lp:isize)->bool{
         if lp==0{return false}
         let di=unsafe{&*(lp as *const DRAWITEMSTRUCT)};
+        if self.draw_home_media(di) || self.draw_note_item(di) || self.draw_editor_button(di) || self.draw_preference_item(di) || self.draw_device_item(di){return true}
         if self.widgets_page.get().is_some_and(|widgets|widgets.draw(self,di)){return true}
         let (bg,field,ink,accent)=self.appearance;
         let id=di.CtlID as u16;let r=di.rcItem;let dc=di.hDC;let p=|n|self.px(n);
-        let muted=mix(bg,ink,169);let edge=mix(bg,ink,43);let control=chrome::control(self.appearance);
-        let focus=di.itemState&ODS_FOCUS!=0 && di.itemState&ODS_NOFOCUSRECT==0;
+        let muted=chrome::muted(self.appearance);let edge=mix(bg,ink,43);let control=chrome::control(self.appearance);
+        let focus=chrome::visible_focus() && di.itemState&ODS_FOCUS!=0 && di.itemState&ODS_NOFOCUSRECT==0;
         if di.CtlType==ODT_LISTBOX && id==LIST {
             let selected=di.itemState&ODS_SELECTED!=0;
             let base=if selected{mix(bg,accent,27)}else{bg};
@@ -279,7 +287,7 @@ impl Ui {
             let first=RECT{left:at,right:r.right-p(6),top:r.top+p(2),bottom:if split{(r.top+r.bottom)/2+p(2)}else{r.bottom}};
             text(dc,first,&name,self.fonts[if is_note{1}else{0}],ink,LEFT);
             if split{
-                if let Some(note)=self.note_ids.get(i).and_then(|id|self.records.get("notes")?.iter().find(|r|r.first()==Some(id))){
+                if let Some(note)=self.note_ids.get(i).and_then(|id|self.records.get("notes")?.iter().find(|r|r.len()>=7&&r.first()==Some(id))){
                     text(dc,RECT{top:first.bottom,bottom:r.bottom-p(2),..first},note.get(2).and_then(|s|s.lines().next()).unwrap_or("Empty note"),self.fonts[3],muted,LEFT);
                 }
             }
@@ -297,8 +305,8 @@ impl Ui {
             panel(dc,rect(r.left+(tw-p(44))/2,r.top+th-p(8),p(44),p(3)),p(2),color,color);return true
         }
         if let Some(tab)=id.checked_sub(TAB).and_then(|i|TABS.get(i as usize)){
-            glyph=Some(tab.2);font=self.fonts[1];size=p(17);
-            let active=tab.0==self.page || (tab.0=="quick" && matches!(self.page,"files"|"downloads"));
+            glyph=Some(tab.2);font=self.fonts[11];size=p(17);
+            let active=tab.0==self.page || (tab.0=="quick" && matches!(self.page,"files"|"downloads")) || (tab.0=="clipboard" && matches!(self.page,"markup"|"ocr"|"rewrite"));
             face=if active{mix(bg,accent,25)}else if hot{mix(bg,ink,16)}else{bg};
             line=face;color=if active{accent}else{muted};
         }else if let Some(tool)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){
@@ -340,7 +348,10 @@ impl Ui {
                     icon(dc,r.left+p(10),r.top+p(9),p(17),Icon::Note,accent,face);
                     text(dc,rect(r.left+p(32),r.top+p(6),tw-p(65),p(24)),if note[1].is_empty(){"Untitled note"}else{&note[1]},self.fonts[1],ink,LEFT);
                     icon(dc,r.right-p(25),r.top+p(10),p(13),Icon::External,muted,face);
-                    text(dc,rect(r.left+p(10),r.top+p(35),tw-p(20),th-p(42)),if note[2].is_empty(){"Empty note"}else{&note[2]},self.fonts[3],muted,DT_WORDBREAK);
+                    text(dc,rect(r.left+p(10),r.top+p(35),tw-p(20),th-p(62)),if note[2].is_empty(){"Empty note"}else{&note[2]},self.fonts[3],muted,DT_WORDBREAK);
+                    let stamp=notes_view::note_date(&note[6]);
+                    text(dc,rect(r.left+p(10),r.bottom-p(21),tw-p(80),p(15)),&format!("Updated {stamp}"),self.fonts[8],muted,LEFT);
+                    let images=note.len().saturating_sub(7);if images>0{text(dc,rect(r.right-p(80),r.bottom-p(21),p(70),p(15)),&format!("{images} image{}",if images==1{""}else{"s"}),self.fonts[8],muted,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);}
                     return true
                 }
                 glyph=Some(Icon::Note);

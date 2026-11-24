@@ -5,7 +5,7 @@ pub fn setting<'a>(ui:&'a Ui,key:&str,default:&'a str)->&'a str{ui.records.get("
 pub fn set(ui:&mut Ui,key:&str,value:&str){let rows=ui.records.entry("settings".into()).or_default();rows.retain(|r|r.first().is_none_or(|s|s!=key));rows.push(vec![key.to_string(),value.to_string()]);}
 fn show(v:&[String],i:usize)->&str{v.get(i).map(String::as_str).unwrap_or_default()}
 fn duration(ms:u64)->String{let s=ms/1000;format!("{:02}:{:02}:{:02}",s/3600,(s/60)%60,s%60)}
-const OPTIONS:&[(&str,&str,&str,&str)]=&[
+pub(crate) const OPTIONS:&[(&str,&str,&str,&str)]=&[
     ("open","Open island","hover","click · hover"),("display","Screen","primary","primary, or a display name from the list"),
     ("position","Screen position","top-center","top-left · top-center · top-right"),("scale","Interface scale","100","75–175 percent"),
     ("center","Compact display","time","time · date · time-date · custom"),("custom","Compact text","Buddy","Up to 80 characters"),
@@ -38,11 +38,33 @@ pub(crate) fn note_rows(ui:&mut Ui){
     if let Some(i)=ui.active_note.as_ref().and_then(|id|ui.note_ids.iter().position(|s|s==id)){ui.select_row(i);}
 }
 pub fn save_note(ui:&mut Ui)->Result<(),String>{
-    let i=note_index(ui).ok_or("Select a note first.")?;
+    save_note_inner(ui, false)
+}
+fn save_note_inner(ui:&mut Ui,keep_empty:bool)->Result<(),String>{
+    let id=ui.active_note.clone().ok_or("Select a note first.")?;
     let title=ui.input();
     let (body,images)=ui.images.contents()?;
     let format=ui.images.format()?;
+    let mut inserted=false;
+    let i=match note_index(ui){
+        Some(index)=>index,
+        None if ui.new_note=>{
+            if !keep_empty && title.trim().is_empty() && body.trim().is_empty() && images.is_empty(){
+                ui.dirty_note=false;
+                return Ok(());
+            }
+            let list=ui.records.entry("notes".into()).or_default();
+            if list.len()>=1000{return Err("The note limit is 1,000.".into());}
+            let stamp=now().to_string();
+            let index=list.len();
+            list.push(vec![id,String::new(),String::new(),"0".into(),stamp.clone(),String::new(),stamp]);
+            inserted=true;
+            index
+        }
+        None=>return Err("Select a note first.".into()),
+    };
     if let Err(reason)=write_note(ui,i,title,body,&images,format){
+        if inserted{ui.records.get_mut("notes").unwrap().remove(i);}
         ui.dirty_note=true;
         return Err(format!("Note still open with unsaved edits. {reason}"));
     }
@@ -165,7 +187,9 @@ fn edit_note(ui:&mut Ui,key:&str)->Result<String,String>{
     match key{
         "select"=>{let id=ui.selected().and_then(|i|ui.note_ids.get(i)).cloned();if id!=ui.active_note{if ui.dirty_note{if let Err(reason)=save_note(ui){if let Some(old)=ui.active_note.as_ref().and_then(|id|ui.note_ids.iter().position(|s|s==id)){ui.select_row(old);}return Err(reason)}}ui.active_note=id;ui.new_note=false;note_rows(ui);fill_note(ui);}Ok(String::new())},
         "new"=>{if ui.dirty_note {save_note(ui)?;}let list=ui.records.entry("notes".into()).or_default();if list.len()>=1000{return Err("The note limit is 1,000.".into())}
-            let t=now().to_string();let id=format!("{}-{}",t,list.len());list.push(vec![id.clone(),String::new(),String::new(),"0".into(),t.clone(),String::new(),t]);ui.search.clear();ui.active_note=Some(id);note_rows(ui);fill_note(ui);ui.new_note=true;ui.dirty_note=true;shell::focus(ui.input_box);Ok("Type a title and note.".into())},
+            let t=now();let mut suffix=list.len();let mut id=format!("{t}-{suffix}");
+            while list.iter().any(|row|row.first()==Some(&id)){suffix+=1;id=format!("{t}-{suffix}");}
+            ui.search.clear();ui.active_note=Some(id);ui.new_note=true;note_rows(ui);fill_note(ui);shell::focus(ui.input_box);Ok("Type a title and note.".into())},
         "save"=>{save_note(ui)?;Ok("Note saved.".into())},
         "search"=>{if let Some(value)=shell::prompt(ui,"Search notes","Search title and body",&ui.search){ui.search=value;note_rows(ui);}Ok(format!("{} matching notes.",ui.note_ids.len()))},
         "clear-search"=>{ui.search.clear();note_rows(ui);Ok(String::new())},
@@ -177,15 +201,25 @@ fn edit_note(ui:&mut Ui,key:&str)->Result<String,String>{
             Ok(String::new())
         },
         "undo"=>{if ui.dirty_note{save_note(ui)?;}restore_deleted_note(ui)?;Ok("Note restored.".into())},
-        _=>{let i=note_index(ui).ok_or("Select a note first.")?;if ui.dirty_note{save_note(ui)?;}
+        "attach"=>{crate::inline_images::paste_note(ui)?;Ok("Image inserted in the note.".into())},
+        "schedule"=>{
+            if ui.active_note.is_none(){return Err("Select a note first.".into());}
+            if let Some(t)=shell::schedule_reminder(ui){
+                if ui.dirty_note || ui.new_note {save_note_inner(ui,true)?;}
+                note_field(ui,5,t.to_string())?;ui.due_note=None;
+                return Ok("Reminder scheduled.".into());
+            }
+            Ok(String::new())
+        }
+        _=>{
+            if ui.dirty_note || ui.new_note{save_note_inner(ui,matches!(key,"pin"|"widget"|"remind"|"snooze"|"remind-custom"))?;}
+            let i=note_index(ui).ok_or("Write something in the note first.")?;
             match key{
                 "pin"=>{let pinned=ui.records["notes"][i][3]=="1";note_field(ui,3,if pinned{"0"}else{"1"}.into())?;},
-                "schedule"=>{if let Some(t)=shell::schedule_reminder(ui){note_field(ui,5,t.to_string())?;ui.due_note=None;return Ok("Reminder scheduled.".into())}},
                 "dismiss"=>{note_field(ui,5,String::new())?;ui.due_note=None;},
                 "remind"|"snooze"|"remind-custom"=>{let minutes=if key=="remind-custom"{let Some(value)=shell::prompt(ui,"Set reminder","Minutes from now","15")else{return Ok(String::new())};value.trim().parse::<u64>().ok().filter(|v|(1..=525600).contains(v)).ok_or("Enter 1 to 525,600 minutes.")?}else{5};note_field(ui,5,(now()+minutes*60000).to_string())?;ui.due_note=None;return Ok(format!("Reminder set for {} minutes from now.",minutes));},
                 "widget"=>{let id=ui.records["notes"][i][0].clone();set(ui,"noteWidget",&id);ui.save()?;},
                 "copy"=>{shell::copy_text(ui,&format!("{}\r\n{}",ui.records["notes"][i][1],ui.records["notes"][i][2]))?;},
-                "attach"=>{crate::inline_images::paste_note(ui)?;return Ok("Image inserted in the note.".into());},
                 "image"|"detach"=>return attached_image(ui,i,key=="detach"),
                 "delete"=>{if !shell::confirm(ui,"Delete the selected note?"){return Ok(String::new())}delete_note(ui,i)?;ui.active_note=None;note_rows(ui);fill_note(ui);},
                 _=>return Ok(String::new())
@@ -362,13 +396,16 @@ mod tests {
         let ui=window.ui.as_mut().unwrap();
         ui.navigate("notes");
         edit_note(ui,"new").unwrap();
+        save_note(ui).unwrap();
+        assert!(ui.new_note && ui.note_ids.is_empty() && ui.records["notes"].is_empty(),
+            "An untouched draft should have an editor but no saved sidebar entry");
         ui.set_input("Synthetic café");
         ui.set_detail("Generated test body");
         let saved=save_note(ui);
-        assert_eq!(ui.note_ids.len(),1);
         let path=ui.profile.join("state-v1.dpapi");
         match saved {
             Ok(()) => {
+                assert_eq!(ui.note_ids.len(),1);
                 assert_eq!(ui.records["notes"][0][1],"Synthetic café");
                 assert_eq!(ui.records["notes"][0][2],"Generated test body");
                 assert_eq!(crate::storage::load(&ui.profile).unwrap(),ui.records);
@@ -393,7 +430,8 @@ mod tests {
             Err(reason) => {
                 assert!(reason.contains("user encryption"),"{reason}");
                 assert!(!path.exists());
-                assert_eq!(ui.records["notes"][0][1],"");
+                assert!(ui.note_ids.is_empty() && ui.records["notes"].is_empty());
+                assert!(ui.new_note);
                 assert!(ui.dirty_note);
                 ui.navigate("widgets");
                 assert_eq!(ui.page,"notes");

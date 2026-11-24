@@ -63,15 +63,21 @@ impl Drop for WorkspaceBitmap {
     fn drop(&mut self){unsafe{SelectObject(self.dc,self.original);DeleteObject(self.image);DeleteDC(self.dc);}}
 }
 #[derive(Default)]
-struct Fade { active:bool, masks:Vec<FadeMask>, bitmap:Option<WorkspaceBitmap> }
+struct Fade { active:bool, masks:Vec<FadeMask>, bitmap:Option<WorkspaceBitmap>, frame_buffer:Option<WorkspaceBitmap> }
 thread_local! {static FADE:RefCell<Fade>=RefCell::new(Fade::default());}
 
+pub(crate) fn workspace_layout_changed(hwnd:HWND){
+    if FADE.with(|f|f.borrow().active){
+        mask_workspace_for_animation(hwnd,true);
+    }
+}
 pub(crate) fn mask_workspace_for_animation(hwnd:HWND,on:bool){
     FADE.with(|state|unsafe{
         let mut f=state.borrow_mut();
-        if on==f.active{return}
+        if !on && !f.active{return}
         f.active=on;f.bitmap=None;
         if !on{
+            f.frame_buffer=None;
             for mask in f.masks.drain(..){
                 if (IsWindow(mask.hwnd)==0 || SetWindowRgn(mask.hwnd,mask.previous,0)==0) && !mask.previous.is_null(){DeleteObject(mask.previous);}
             }
@@ -79,7 +85,8 @@ pub(crate) fn mask_workspace_for_animation(hwnd:HWND,on:bool){
         }
         let mut child=GetTopWindow(hwnd);
         while !child.is_null(){
-            if ui::workspace_child(GetDlgCtrlID(child)){
+            if GetWindowLongW(child,GWL_STYLE) as u32 & WS_VISIBLE!=0
+                && ui::workspace_child(GetDlgCtrlID(child)) && !f.masks.iter().any(|m|m.hwnd==child){
                 let mut old=CreateRectRgn(0,0,0,0);
                 if !old.is_null() && GetWindowRgn(child,old)==0{DeleteObject(old);old=null_mut();}
                 let empty=CreateRectRgn(0,0,0,0);
@@ -113,7 +120,10 @@ unsafe fn print_children(hwnd:HWND,dc:HDC,workspace:Option<bool>){
         OffsetViewportOrgEx(dc,origin.x,origin.y,null_mut());
         if workspace==Some(true) {
             // Bypass DefWindowProc's nonclient clipping of the masked HWND.
-            SendMessageW(child,WM_PRINTCLIENT,dc as usize,(PRF_CLIENT|PRF_ERASEBKGND|PRF_CHILDREN) as isize);
+            SendMessageW(child,WM_PRINTCLIENT,dc as usize,(PRF_CLIENT|PRF_ERASEBKGND) as isize);
+            // WM_PRINTCLIENT only paints this control's client area. Some
+            // compound pages delegate child printing to DefWindowProc(WM_PRINT).
+            if !GetTopWindow(child).is_null(){print_children(child,dc,None);}
         }else{
             SendMessageW(child,WM_PRINT,dc as usize,(PRF_CLIENT|PRF_NONCLIENT|PRF_ERASEBKGND|PRF_CHILDREN) as isize);
         }
@@ -121,14 +131,18 @@ unsafe fn print_children(hwnd:HWND,dc:HDC,workspace:Option<bool>){
     }
 }
 impl WorkspaceBitmap{
-    unsafe fn capture(hwnd:HWND,reference:HDC,width:i32,height:i32,page:&'static str)->Option<Self>{
+    unsafe fn allocate(reference:HDC,width:i32,height:i32,page:&'static str)->Option<Self>{
         let dc=CreateCompatibleDC(reference);
         if dc.is_null(){return None}
         let image=CreateCompatibleBitmap(reference,width,height);
         if image.is_null(){DeleteDC(dc);return None}
         let original=SelectObject(dc,image);
         if original.is_null(){DeleteObject(image);DeleteDC(dc);return None}
-        let bitmap=Self{dc,image,original,width,height,page};
+        Some(Self{dc,image,original,width,height,page})
+    }
+    unsafe fn capture(hwnd:HWND,reference:HDC,width:i32,height:i32,page:&'static str)->Option<Self>{
+        let bitmap=Self::allocate(reference,width,height,page)?;
+        let dc=bitmap.dc;
         let mut painted=false;
         with_ui(|u|{
             SetDCBrushColor(dc,u.appearance.0);
@@ -182,9 +196,21 @@ unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
     if !mask.is_null(){if GetWindowRgn(hwnd,mask)>0{ExtSelectClipRgn(dc,mask,RGN_AND);}DeleteObject(mask);}
     let frame=island::frame();
     if frame.animating {
-        with_ui(|u|u.paint_surface(dc));
-        composite_workspace(hwnd,dc,&frame);
-        if children{print_children(hwnd,dc,Some(false));}
+        // Paint the surface and translucent workspace together. Painting them
+        // separately to the window briefly exposes the empty background.
+        let mut client=RECT::default();GetClientRect(hwnd,&mut client);
+        let buffer=FADE.with(|f|f.borrow_mut().frame_buffer.take())
+            .filter(|b|b.width==client.right && b.height==client.bottom)
+            .or_else(||WorkspaceBitmap::allocate(dc,client.right,client.bottom,""));
+        let target=buffer.as_ref().map_or(dc,|b|b.dc);
+        with_ui(|u|u.paint_surface(target));
+        composite_workspace(hwnd,target,&frame);
+        if children{print_children(hwnd,target,Some(false));}
+        if let Some(buffer)=buffer{
+            let b=frame.body;
+            BitBlt(dc,b.left,b.top,b.right-b.left,b.bottom-b.top,target,b.left,b.top,SRCCOPY);
+            FADE.with(|f|f.borrow_mut().frame_buffer=Some(buffer));
+        }
     }else{
         with_ui(|u|u.paint(dc));
         if children{print_children(hwnd,dc,None);}
@@ -196,6 +222,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         WM_NOTIFY if wp==inline_images::NOTE_EDITOR as usize=>inline_images::link_notification(hwnd,lp),
         side_widgets::MESSAGE=>{with_ui(|u|side_widgets::command(u,wp));0},
         devices::OCR_DONE=>{with_ui(devices::finish_scan);0},
+        WM_HSCROLL=>{with_ui(|u|u.home_seek_scroll(lp as _,wp as u16));0},
         WM_COMMAND=>{with_ui(|u|match (wp&0xffff) as u16{
             188=>shell::step_height(u,-20),189=>shell::step_height(u,20),id=>u.command(id,(wp>>16) as u16)
         });0},
@@ -218,7 +245,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         WM_ERASEBKGND=>1,
         WM_SETTINGCHANGE|WM_THEMECHANGED=>{with_ui(|u|{
             u.apply_appearance();
-            if island::frame().animating && shell::reduce_motion(u){island::request(u.expanded,true);shell::animate(u);}
+            shell::motion_setting_changed(u);
             InvalidateRect(hwnd,null(),0);
         });0},
         WM_LBUTTONDOWN=>{let(x,y)=local_point(lp);let mut dragged=false;with_ui(|u|dragged=shell::resize_down(u,x,y));if dragged{0}else{DefWindowProcW(hwnd,msg,wp,lp)}},
@@ -282,7 +309,24 @@ fn run()->Result<(),String>{unsafe{
     if !isolated{WTSRegisterSessionNotification(hwnd,0);shell::tray(&ui,true);if RegisterHotKey(hwnd,1,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,VK_SPACE as u32)==0{ui.status("Ctrl+Alt+Space is already in use. Open Buddy from its tray icon.");}devices::restore(&ui.profile);}
     DragAcceptFiles(hwnd,1);SetTimer(hwnd,1,1000,None);if ui.expanded{SetTimer(hwnd,2,50,None);}
     WINDOW.with(|s|*s.borrow_mut()=Some(ui));ShowWindow(hwnd,SW_SHOWNOACTIVATE);
-    let mut msg=MSG::default();while GetMessageW(&mut msg,null_mut(),0,0)>0{if inline_images::editor_shortcut(&msg)||side_widgets::dialog(&msg){continue}if msg.message==WM_KEYDOWN && msg.wParam==VK_ESCAPE as usize && (msg.hwnd==hwnd || IsChild(hwnd,msg.hwnd)!=0){with_ui(|u|shell::expand(u,false));continue}if IsDialogMessageW(hwnd,&msg)==0{TranslateMessage(&msg);DispatchMessageW(&msg);}}
+    let mut msg=MSG::default();
+    while GetMessageW(&mut msg,null_mut(),0,0)>0{
+        if inline_images::editor_shortcut(&msg)||side_widgets::dialog(&msg){continue}
+        if msg.message==WM_KEYDOWN && matches!(msg.wParam as u16,VK_TAB|VK_UP|VK_DOWN|VK_LEFT|VK_RIGHT){chrome::keyboard_navigation(true);}
+        if matches!(msg.message,WM_LBUTTONDOWN|WM_RBUTTONDOWN){chrome::keyboard_navigation(false);}
+        if msg.message==WM_KEYDOWN && (msg.hwnd==hwnd || IsChild(hwnd,msg.hwnd)!=0){
+            if msg.wParam==VK_ESCAPE as usize{with_ui(|u|{if !u.editor_escape(){shell::expand(u,false)}});continue}
+            let frame=island::frame();
+            if !frame.expanded && msg.hwnd==hwnd{
+                if msg.wParam==VK_RETURN as usize || msg.wParam==VK_SPACE as usize{
+                    with_ui(|u|shell::expand(u,true));continue
+                }
+                // The closing body is inert until the compact controls take focus.
+                if frame.animating && msg.wParam==VK_TAB as usize{continue}
+            }
+        }
+        if IsDialogMessageW(hwnd,&msg)==0{TranslateMessage(&msg);DispatchMessageW(&msg);}
+    }
     WINDOW.with(|s|{s.borrow_mut().take();});CoUninitialize();if !mutex.is_null(){CloseHandle(mutex);}Ok(())
 }}
 fn main(){if let Err(e)=run(){unsafe{MessageBoxW(null_mut(),wide(&e).as_ptr(),wide("Buddy Work Rust").as_ptr(),MB_ICONERROR);}}}
@@ -326,7 +370,12 @@ mod fade_tests {
             assert!((((mid>>shift)&255) as i32-expected).abs()<=2,"half opacity {mid:#x}");
         }
         assert_eq!(GetPixel(dest.dc,2,3),0xffffff);
+        let added=CreateWindowExW(0,class.as_ptr(),null(),WS_CHILD|WS_VISIBLE,2,2,10,10,
+            hwnd,302usize as _,null_mut(),null());
+        workspace_layout_changed(hwnd);
+        assert_eq!(GetWindowRgn(added,mask),NULLREGION,"a lazily created panel joins the same fade");
         mask_workspace_for_animation(hwnd,false);
+        assert_eq!(GetWindowRgn(added,mask),0);
         assert_eq!(GetWindowRgn(child,mask),0,"original rectangular hit target restored");
         DeleteObject(mask);drop(direct);drop(dest);drop(source);ReleaseDC(hwnd,reference);DestroyWindow(hwnd);
     }}

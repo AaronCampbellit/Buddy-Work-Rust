@@ -154,3 +154,55 @@ fn capture_real_workspaces_and_cards() {
     });
     if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
 }
+
+#[test]
+#[ignore="opt-in transition capture; uses the same private profile and desktop as the endpoint captures"]
+fn note_image_fades_with_the_workspace_during_island_motion(){
+    use std::time::Duration;
+    let supplied=env::var_os("BUDDY_ISLAND_FIXTURES").map(PathBuf::from);
+    let fixtures=supplied.clone().unwrap_or_else(||env::temp_dir().join(format!("Buddy-motion-capture-{}-{}",std::process::id(),core::now())));
+    if supplied.is_none(){seed_profiles(&fixtures);}
+    let output=PathBuf::from(env::var_os("BUDDY_UI_CAPTURE_DIR").expect("BUDDY_UI_CAPTURE_DIR"));
+    fs::create_dir_all(&output).unwrap();
+    workspace::with_private_test_desktop(||unsafe{
+        let hwnd=create_app(&fixtures.join("fixture-image"),true,&[]);
+        with_ui(|ui|{
+            assert!(!shell::reduce_motion(ui),"this visual capture requires Windows client animations on its test station");
+            ui.navigate("notes");
+        });
+        let open=render(hwnd,island::frame().body);
+        let red=[250,103,81];
+        let mut background=0;
+        with_ui(|ui|background=ui.appearance.0);
+        let paper=[background as u8,(background>>8) as u8,(background>>16) as u8];
+        let anchors:Vec<_>=open.enumerate_pixels().filter_map(|(x,y,pixel)|
+            (pixel.0[..3]==red).then_some((x,y))).collect();
+        assert!(anchors.len()>100,"fixture image must be visible at the open endpoint");
+        with_ui(|ui|{shell::expand(ui,false);shell::capture_transition_at(ui,Duration::from_millis(240));});
+        with_ui(|ui|shell::expand(ui,true));
+        for elapsed in [24,82,160,240]{
+            with_ui(|ui|shell::capture_transition_at(ui,Duration::from_millis(elapsed)));
+            let frame=island::frame();
+            let image=render(hwnd,frame.body);
+            save(&output,&format!("motion-note-open-{elapsed:03}ms"),&image);
+            assert!(ink(&image,image.width()/3,0,image.width()/3,35)>12,"persistent clock at {elapsed} ms");
+            if elapsed!=82{continue}
+            assert!(frame.body_alpha>0.1 && frame.body_alpha<0.9);
+            let dx=(frame.body.left+frame.body.right-frame.expanded_body.left-frame.expanded_body.right)/2
+                +frame.expanded_body.left-frame.body.left;
+            let expected=std::array::from_fn::<_,3,_>(|i|paper[i] as f32+(red[i] as f32-paper[i] as f32)*frame.body_alpha);
+            let mut checked=0;let mut matching=0;
+            for &(x,y) in &anchors{
+                let x=x as i32+dx;
+                if x<9 || x>=image.width() as i32-9 || y+12>=image.height(){continue}
+                checked+=1;
+                let pixel=image.get_pixel(x as u32,y);
+                if (0..3).all(|i|(pixel[i] as f32-expected[i]).abs()<6.0){matching+=1;}
+            }
+            assert!(checked>100 && matching*100>checked*90,
+                "{matching}/{checked} inline image pixels follow the body opacity");
+        }
+        close_app(hwnd);
+    });
+    if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
+}
