@@ -6,7 +6,7 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.48** · 24.07 MB installer · 45.40 MB installed on Windows 11 x64
+**0.1.1-beta.49** · 24.08 MB installer · 45.43 MB installed on Windows 11 x64
 
 ## Workspaces
 
@@ -159,11 +159,20 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 <details>
 <summary><strong>Watch the island open and close</strong></summary>
 
-You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate. On our Windows 11 VM, the first time a pinned note opened in the main window, animation began about 0.6–0.7 seconds after the click.
+You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
+
+**Opening a pinned note.** On our Windows 11 test machine, the island started moving about 0.20 seconds after mouse release and reached full width 0.62–0.65 seconds after the press.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/notes.png">
-  <img src="docs/screenshots/island-motion.png" alt="The native island opening to an editable note and closing again">
+  <img src="docs/screenshots/island-motion.png" alt="The pinned Coastal trail guide opens into the main Notes editor with its inline image and map link">
+</picture>
+
+**Clicking during a close.** All four clicks during closing reopened the island. Its largest visible closing step in those tests was 90 pixels, down from 482 pixels on beta.48.
+
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/home-playing.png">
+  <img src="docs/screenshots/island-reversal.png" alt="The island starts closing, then reverses at the click and returns to the full Home workspace">
 </picture>
 
 </details>
@@ -172,7 +181,7 @@ You can select a tab while the island is opening. Buddy opens the last tab you s
 
 ## Install and permissions
 
-The installer runs under your Windows user account and is unsigned. The app folder uses 45,398,951 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.53 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,432,231 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.56 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
@@ -180,6 +189,6 @@ Windows encrypts saved notes and clipboard history for the current user. OCR run
 
 Buddy uses Rust and native Win32 controls. Build from `native-rust` on Windows x64. To package the app, extract the matching portable ZIP and pass its `Buddy\camera` folder to the packager. [Build and packaging instructions](native-rust/README.md#build-and-package-on-windows-x64)
 
-[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.48/Buddy-Work-Rust-Setup-x64.exe
-[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.48/Buddy-Work-Rust-Portable-x64.zip
-[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.48
+[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.49/Buddy-Work-Rust-Setup-x64.exe
+[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.49/Buddy-Work-Rust-Portable-x64.zip
+[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.49
