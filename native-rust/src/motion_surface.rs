@@ -8,7 +8,7 @@ thread_local! {
     static COMPOSITED: Cell<u32> = const { Cell::new(0) };
 }
 
-struct Surface {
+pub(super) struct Surface {
     bitmap: WorkspaceBitmap,
     pixels: *mut u32,
 }
@@ -41,6 +41,25 @@ impl Surface {
         Some(Self { bitmap, pixels: data.cast() })
     }
 
+    pub(super) unsafe fn snapshot(hwnd:HWND,width:i32,height:i32)->Option<Vec<u32>>{
+        let mut surface=Self::new(width,height)?;
+        surface.draw(hwnd,&island::frame());
+        Some(std::slice::from_raw_parts(surface.pixels,(width*height) as usize).to_vec())
+    }
+    pub(super) unsafe fn from_pixels(width:i32,height:i32,data:&[u32])->Option<Self>{
+        if width.checked_mul(height)? as usize!=data.len(){return None}
+        let surface=Self::new(width,height)?;
+        std::slice::from_raw_parts_mut(surface.pixels,data.len()).copy_from_slice(data);
+        Some(surface)
+    }
+    #[cfg(test)]
+    pub(super) unsafe fn fixture_colors(&self)->usize{
+        let len=(self.bitmap.width*self.bitmap.height) as usize;
+        std::slice::from_raw_parts(self.pixels,len).iter().filter(|p|matches!(**p&0xffffff,0xfa6751|0x10aba8|0xefbc44)).count()
+    }
+    pub(super) unsafe fn blend(&self,dc:HDC,frame:&island::Frame,alpha:u8){
+        self.bitmap.blend(dc,frame.visible_workspace(island::scale_and_limit().0),alpha,frame.workspace_offset());
+    }
     unsafe fn draw(&mut self, hwnd: HWND, frame: &island::Frame) {
         let b = &self.bitmap;
         let pixel_count = b.width as usize * b.height as usize;

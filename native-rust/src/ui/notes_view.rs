@@ -70,10 +70,7 @@ struct Layout {
     more: RECT,
 }
 
-fn move_to(h: Handle, r: RECT, visible: bool) {
-    if visible { pos(h, r.left, r.top, r.right-r.left, r.bottom-r.top); }
-    show(h, visible);
-}
+
 
 impl Ui {
     pub(crate) fn note_scroll_anchor(&self) -> Option<String> {
@@ -172,16 +169,19 @@ impl Ui {
             SendMessageW(self.input_box, WM_SETFONT, self.fonts[1] as _, 0);
             SendMessageW(self.input_box, 0x1501, 1, wide("Untitled note").as_ptr() as _);
         }
+        let batch=ChildLayout::new(crate::island::frame().animating);
+        let move_to=|h,r:RECT,on|batch.place(h,on,r.left,r.top,r.right-r.left,r.bottom-r.top);
         move_to(self.search_box, RECT { left: g.search.left+p(30), right:g.search.right-p(5), top:g.search.top+p(7), bottom:g.search.bottom-p(5) }, true);
         move_to(self.buttons[0], g.add, true);
         move_to(self.list, g.list, !self.note_ids.is_empty());
         move_to(self.input_box, RECT {left:g.title.left+p(7),right:g.title.right-p(4),top:g.title.top+p(5),bottom:g.title.bottom-p(3)}, edit);
-        self.images.note_layout(edit, chrome::inset(g.body,p(1)), self.zoom, self.appearance, 10);
         for h in self.buttons.iter().skip(1) { show(*h, false); }
         move_to(c.close, g.close, edit);
         move_to(c.schedule, g.reminder, edit);
         move_to(c.dismiss, g.dismiss, edit && remove);
         move_to(self.more_go, g.more, edit || self.last_removed.is_some());
+        batch.apply();
+        self.images.note_layout(edit, chrome::inset(g.body,p(1)), self.zoom, self.appearance, 10);
     }
 
     pub(super) fn note_tab_stops(&self) -> Vec<Handle> {

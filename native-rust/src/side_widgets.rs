@@ -375,9 +375,19 @@ pub fn set_opacity(alpha:u8){
 }
 pub fn sync(ui:&mut Ui){
     let geometry=island::frame();
+    let available=!ui.locked && !ui.paused && !ui.suppressed && ui.hidden_until.is_none();
+    if !available{ui.pending_widget_note=None;crate::note_preview::clear();}
+    else if !ui.expanded && !geometry.animating{
+        if let Some(row)=note_row(ui).filter(|_|geometry.widgets.iter().any(|(kind,_)|*kind==Widget::Note)){
+            crate::note_preview::warm(ui,&row[0]);
+        }else{crate::note_preview::clear();}
+    }else if ui.pending_widget_note.is_none(){crate::note_preview::clear();}
+    else{crate::note_preview::validate(ui);}
     let view=Bounds::rect(&geometry.widget_view);
     if ui.expanded||ui.locked||ui.paused||ui.suppressed||ui.hidden_until.is_some()||geometry.widgets.is_empty()||view.w<1||view.h<1{
-        let _=flush(ui);
+        // Opening the pinned note commits its native widget editor before
+        // setting pending_widget_note. The same uninterrupted command hides it.
+        if ui.pending_widget_note.is_none(){let _=flush(ui);}
         STRIP.with(|s|{
             if let Ok(mut state)=s.try_borrow_mut(){if let Some(strip)=state.as_mut(){if strip.shown{unsafe{
                     ShowWindow(strip.handle,SW_HIDE);
@@ -751,7 +761,7 @@ unsafe extern "system" fn procedure(h:HWND,msg:u32,wp:usize,lp:isize)->isize{
                 if let Some((owner,event))=event{
                     EVENTS.with(|events|events.borrow_mut().push_back(event));
                     // Paste must read the clipboard and the caret before the next input.
-                    if id==406{SendMessageW(owner,MESSAGE,0,0);}else{PostMessageW(owner,MESSAGE,0,0);}
+                    if matches!(id,401|406){SendMessageW(owner,MESSAGE,0,0);}else{PostMessageW(owner,MESSAGE,0,0);}
                 }
             }
             0
@@ -916,11 +926,11 @@ fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
     }
     match id {
         401=>{
+            if !shell::reduce_motion(ui){crate::note_preview::activate(ui,&r[0]);}
+            ui.pending_widget_note=Some(WidgetOpen::Load(r[0].clone()));
             shell::expand_from_side(ui);
-            if ui.expanded{
-                ui.search.clear();ui.new_note=false;ui.active_note=Some(r[0].clone());
-                ui.navigate("notes");
-            }
+            if !ui.expanded{ui.pending_widget_note=None;crate::note_preview::clear();}
+            else if !island::frame().animating{finish_widget_open(ui);}
             return Ok(String::new());
         }
         408=>{shell::copy_text(ui,&format!("{}\r\n\r\n{}",r[1],r[2]))?;return Ok("Note copied.".into());}
@@ -964,6 +974,39 @@ fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
     if ui.page=="notes"&&!ui.dirty_note{core::render(ui,"notes");}
     Ok("Note updated.".into())
 }
+pub(crate) enum WidgetOpen { Load(String), Layout }
+
+pub(crate) fn finish_widget_open(ui:&mut Ui){
+    let cached=crate::note_preview::active();
+    if cached && island::frame().animating{return}
+    let Some(stage)=ui.pending_widget_note.take()else{return};
+    if !ui.expanded || ui.suppressed || ui.paused || ui.locked || ui.pending_page.is_some(){crate::note_preview::clear();return}
+    match stage{
+        WidgetOpen::Load(id)=>{
+            ui.search.clear();ui.new_note=false;ui.active_note=Some(id);
+            if !island::frame().animating{
+                ui.navigate("notes");
+                if cached{
+                    crate::mask_workspace_for_animation(ui.hwnd.0,false);
+                    crate::note_preview::clear();
+                    crate::present_frame(ui.hwnd.0);
+                }
+                return
+            }
+            if ui.load_page("notes"){ui.pending_widget_note=Some(WidgetOpen::Layout);}
+        }
+        WidgetOpen::Layout=>{
+            ui.layout();
+            crate::repaint_after_update(ui.hwnd.0);
+        }
+    }
+    if island::frame().animating{island::sample();ui.layout_motion_header();}
+    crate::present_frame(ui.hwnd.0);
+    // Dispatch after committing that visual frame. Preparing the entire cold
+    // editor, laying out its HWNDs and capturing it in one call delays the UI.
+    if ui.pending_widget_note.is_some(){unsafe{PostMessageW(ui.hwnd.0,shell::OPEN_WIDGET_NOTE,0,0);}}
+}
+
 fn hide_note(ui:&mut Ui,id:&str)->Result<String,String>{
     if core::setting(ui,"noteWidget","")!=id{return Err("This note is no longer shown.".into());}
     core::set(ui,"noteWidget","");

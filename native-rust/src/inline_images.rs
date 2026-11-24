@@ -207,8 +207,8 @@ fn selection(hwnd:HWND)->(usize,usize){
 }
 fn select(hwnd:HWND,start:usize,end:usize){unsafe{SendMessageW(hwnd,EM_SETSEL_,start,end as _);}}
 unsafe fn place(hwnd:HWND,bounds:(i32,i32,i32,i32),visible:bool){
-    if visible{MoveWindow(hwnd,bounds.0,bounds.1,bounds.2.max(1),bounds.3.max(1),1);}
-    ShowWindow(hwnd,if visible{SW_SHOWNA}else{SW_HIDE});
+    if visible{crate::ui::pos(hwnd,bounds.0,bounds.1,bounds.2,bounds.3);}
+    crate::ui::show(hwnd,visible);
 }
 
 #[derive(Default)]

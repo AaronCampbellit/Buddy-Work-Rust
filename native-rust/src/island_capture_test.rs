@@ -287,7 +287,40 @@ fn opening_tab_click_and_reversal_preserve_visible_targets(){
             assert!(!workspace_masked(),"live children regain their original regions");
         };
         assert_live();
+        let header=island::frame().body;
+        let x=(header.left+header.right)/2;
+        let point=(16usize<<16 | x as usize) as isize;
         with_ui(|ui|shell::expand(ui,false));
+        SendMessageW(hwnd,WM_LBUTTONDOWN,1,point);
+        assert_eq!(GetCapture(),hwnd,"closing header owns the entire press");
+        with_ui(|ui|shell::capture_transition_at(ui,Duration::from_millis(240)));
+        let frame=island::frame();
+        assert!(!frame.expanded && !frame.animating,"the close must reach its compact endpoint");
+        let compact=GetDlgItem(hwnd,ui::COMPACT as i32);
+        assert!(!compact.is_null());
+        assert_eq!(GetParent(compact),hwnd);
+        assert_eq!(GetDlgCtrlID(compact),ui::COMPACT as i32);
+        let mut class=[0u16;32];let len=GetClassNameW(compact,class.as_mut_ptr(),class.len()as i32);
+        assert_eq!(String::from_utf16_lossy(&class[..len as usize]).to_lowercase(),"button");
+        let styles=GetWindowLongW(compact,GWL_STYLE) as u32;
+        assert_ne!(styles&WS_VISIBLE,0,"compact button style {styles:#x}, parent {:#x}",GetWindowLongW(hwnd,GWL_STYLE));
+        let mut bounds=RECT::default();assert_ne!(GetWindowRect(compact,&mut bounds),0);
+        let mut at=POINT{x,y:16};ClientToScreen(hwnd,&mut at);
+        assert!(at.x>=bounds.left && at.x<bounds.right && at.y>=bounds.top && at.y<bounds.bottom);
+        assert_eq!(ChildWindowFromPointEx(hwnd,POINT{x,y:16},CWP_SKIPINVISIBLE|CWP_SKIPDISABLED),compact);
+
+        SendMessageW(hwnd,WM_LBUTTONUP,0,point);
+        assert!(read_ui(|u|u.expanded).unwrap(),"release after compact controls appear reopens");
+        with_ui(|ui|shell::capture_transition_at(ui,Duration::from_millis(240)));
+        with_ui(|ui|shell::expand(ui,false));
+        SendMessageW(hwnd,WM_LBUTTONDOWN,1,point);
+        SendMessageW(hwnd,WM_MOUSEMOVE,1,point+24);
+        SendMessageW(hwnd,WM_LBUTTONUP,0,point);
+        assert!(!read_ui(|u|u.expanded).unwrap(),"dragging and returning does not reopen");
+        SendMessageW(hwnd,WM_LBUTTONDOWN,1,point);
+        SendMessageW(hwnd,WM_CANCELMODE,0,0);
+        SendMessageW(hwnd,WM_LBUTTONUP,0,point);
+        assert!(!read_ui(|u|u.expanded).unwrap(),"a cancelled press does not reopen");
         with_ui(|ui|{
             core::set(ui,"motion","on");
             shell::motion_setting_changed(ui);
@@ -446,6 +479,18 @@ fn opening_pinned_note_preserves_both_editors() {
             u.read_error=None;
         });
         click();
+        // A cold pinned-note request can now paint its first movement before
+        // loading Rich Edit. Drive the real timer and posted destination message.
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while read_ui(|u|u.pending_widget_note.is_some())==Some(true){
+            assert!(std::time::Instant::now()<deadline,"pinned note did not finish loading");
+            SendMessageW(h,WM_TIMER,shell::MOTION_TIMER,0);
+            let mut message=MSG::default();
+            if PeekMessageW(&mut message,h,shell::OPEN_WIDGET_NOTE,shell::OPEN_WIDGET_NOTE,PM_REMOVE)!=0{
+                DispatchMessageW(&message);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
         with_ui(|u|{
             assert!(u.expanded);assert!(u.search.is_empty());assert_eq!(u.active_note.as_deref(),Some("example"));
             assert_eq!(u.input(),"Fresh widget draft");
@@ -469,4 +514,62 @@ fn opening_pinned_note_preserves_both_editors() {
         close_app(h);
     });
     let _=fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore="render a read-only pinned preview on a separate native window thread"]
+fn idle_pinned_preview_contains_the_actual_inline_art_and_rejects_edited_data(){
+    let root=env::temp_dir().join(format!("Buddy-pinned-preview-{}-{}",std::process::id(),core::now()));
+    let supplied=env::var_os("BUDDY_ISLAND_FIXTURES").map(PathBuf::from);
+    let fixtures=supplied.as_ref().unwrap_or(&root);
+    if supplied.is_none(){seed_profiles(fixtures);}
+    workspace::with_private_test_desktop(||unsafe{
+        let h=create_app(&fixtures.join("fixture-cards"),false,&[island::Widget::Note]);
+        let wait_ready=||{
+            read_ui(|u|note_preview::warm(u,"example"));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(8);
+            while !read_ui(|u|note_preview::activate(u,"example")).unwrap(){
+                assert!(std::time::Instant::now()<deadline,"native preview did not become ready");
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+        };
+        wait_ready();
+        assert!(note_preview::fixture_colors()>220,"selected note image must paint in the preview");
+
+        // A freshly opened pinned note shows its tabs in the preview before
+        // the native workspace HWNDs are visible. A press at those displayed
+        // coordinates takes the same path as clicking the eventual button.
+        let quick=GetDlgItem(h,171);
+        assert_eq!(GetWindowLongW(quick,GWL_STYLE) as u32&WS_VISIBLE,0);
+        with_ui(|u|{
+            u.expanded=true;
+            u.pending_widget_note=Some(side_widgets::WidgetOpen::Load("example".into()));
+            island::request(true,false);
+            island::sample_after(std::time::Duration::from_millis(120));
+        });
+        let frame=island::frame();
+        let x=(frame.expanded_body.left+frame.expanded_body.right)/2-79+frame.workspace_offset();
+        let y=frame.expanded_body.top+66;
+        assert_eq!(read_ui(|u|u.visible_navigation_at(x,y)).flatten(),Some(quick));
+        let point=((y as u16 as usize)<<16 | x as u16 as usize) as isize;
+        SendMessageW(h,WM_LBUTTONDOWN,1,point);
+        SendMessageW(h,WM_LBUTTONUP,0,point);
+        assert_eq!(read_ui(|u|(u.pending_widget_note.is_some(),u.pending_page)),Some((false,Some("quick"))));
+        assert!(!note_preview::active());
+        with_ui(|u|{u.expanded=false;u.pending_page=None;island::request(false,true);});
+        wait_ready();
+        with_ui(|u|{
+            u.records.get_mut("notes").unwrap()[0][2].push_str(" edited");
+            note_preview::validate(u);
+            assert!(!note_preview::active(),"drop the active pixels after editing the note");
+            assert!(!note_preview::activate(u,"example"),"edited content must never use the previous pixels");
+        });
+        wait_ready();
+        with_ui(|u|{
+            u.locked=true;side_widgets::sync(u);
+            assert!(!note_preview::active(),"locking discards the active note preview");
+        });
+        close_app(h);
+    });
+    if supplied.is_none(){fs::remove_dir_all(root).unwrap();}
 }

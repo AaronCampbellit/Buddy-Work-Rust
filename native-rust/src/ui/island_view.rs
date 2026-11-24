@@ -1,6 +1,6 @@
 use super::*;
 use chrome::{fill,icon,inset,mix,panel,rect,text,Icon};
-use windows_sys::Win32::{Foundation::{POINT,RECT},UI::Controls::{DRAWITEMSTRUCT,ODT_BUTTON,ODT_LISTBOX,ODS_FOCUS,ODS_NOFOCUSRECT,ODS_SELECTED}};
+use windows_sys::Win32::{Foundation::RECT,UI::Controls::{DRAWITEMSTRUCT,ODT_BUTTON,ODT_LISTBOX,ODS_FOCUS,ODS_NOFOCUSRECT,ODS_SELECTED}};
 
 pub(super) const TAB:u16=170;
 pub(super) const HEAD:u16=180;
@@ -56,6 +56,10 @@ impl Ui {
         // Building a Rich Edit page can take longer than the remaining frames.
         // Keep only the latest tab or header choice while the old page is fading.
         self.pending_page=None;
+        if self.pending_widget_note.is_some(){
+            if page=="notes"{return}
+            self.pending_widget_note=None;crate::note_preview::clear();
+        }
         if !self.expanded || self.page==page{return}
         if crate::island::frame().animating || crate::workspace_masked(){
             self.pending_page=Some(page);
@@ -105,30 +109,44 @@ impl Ui {
         if body.right>body.left && body.bottom>body.top{return body}
         let mut r=RECT::default();unsafe{GetClientRect(self.hwnd.0,&mut r);}r
     }
+    // The same destinations serve the visible pixels and their hit targets,
+    // including a pre-rendered note whose live tab HWNDs are still compact.
+    fn navigation_slots(&self,content:RECT)->Vec<(Handle,RECT)>{
+        let p=|n|self.px(n);
+        let w=content.right-content.left;
+        let gap=p(4);
+        let tw=((w-p(60)-3*gap)/4).min(p(154));
+        let start=content.left+(w-(tw*4+gap*3))/2;
+        let mut slots=Vec::with_capacity(5);
+        let configured=core::setting(self,"moduleOrder","");
+        for key in configured.split(',').map(str::trim).chain(TABS.iter().map(|t|t.0)){
+            if let Some(i)=TABS.iter().position(|t|t.0==key){
+                if !slots.iter().any(|&(h,_)|h==self.tabs[i]){
+                    let x=start+slots.len() as i32*(tw+gap);
+                    slots.push((self.tabs[i],rect(x,content.top+p(51),tw,p(31))));
+                }
+            }
+        }
+        slots.push((self.collapse,rect(content.right-p(28),content.top+p(46),p(22),p(26))));
+        slots
+    }
     pub(crate) fn visible_navigation_at(&self,x:i32,y:i32)->Option<Handle>{
         let frame=crate::island::frame();
         if !self.expanded || frame.body_alpha<=0.0 || !crate::island::contains(&frame,x,y){return None}
         let viewport=frame.visible_workspace(self.scale());
         if x<viewport.left || x>=viewport.right || y<viewport.top || y>=viewport.bottom{return None}
-        let mut point=POINT{x:x-frame.workspace_offset(),y};
-        unsafe{
-            ClientToScreen(self.hwnd.0,&mut point);
-            self.tabs.iter().chain([&self.collapse]).copied().find(|&child|{
-                let mut r=RECT::default();
-                GetWindowLongW(child,GWL_STYLE) as u32&WS_VISIBLE!=0 && GetWindowRect(child,&mut r)!=0
-                    && point.x>=r.left && point.x<r.right && point.y>=r.top && point.y<r.bottom
-            })
-        }
+        let x=x-frame.workspace_offset();
+        self.navigation_slots(frame.expanded_body).into_iter().find_map(|(child,r)|{
+            (x>=r.left && x<r.right && y>=r.top && y<r.bottom).then_some(child)
+        })
     }
     pub(crate) fn layout_motion_header(&self){
         let frame=crate::island::frame();
         let body=self.body();let p=|n|self.px(n);
         let surface_w=body.right-body.left;let surface_h=body.bottom-body.top;
         let open=self.expanded||frame.animating;
-        let place=|handle,on,x,y,w,h|{
-            if on{pos(handle,body.left+x,body.top+y,w,h);}
-            show(handle,on);
-        };
+        let batch=ChildLayout::new(frame.animating);
+        let place=|handle,on,x,y,w,h|batch.place(handle,on,body.left+x,body.top+y,w,h);
         place(self.compact,!open,0,0,surface_w,surface_h);
         place(self.compact_tools,!open,surface_w-p(45),p(3),p(29),(surface_h-p(7)).min(p(34)));
         // Keep the notification bell anchored between its actual compact and
@@ -142,6 +160,8 @@ impl Ui {
             let on=open && (i==0 || x+p(30)<=surface_w-p(4));
             place(*tool,on,x,header_y,p(30),p(30));
         }
+        if frame.animating{place(self.resize,false,0,0,0,0);}
+        batch.apply();
     }
     pub(crate) fn layout(&self){
         let frame=crate::island::frame();let body=self.body();
@@ -153,22 +173,19 @@ impl Ui {
         let home=open && self.page=="home";let notes=open && self.page=="notes";
         let custom=workspaces_page::handles(self.page) || editor_views::handles(self.page) || matches!(self.page,"widgets"|"settings"|"audio"|"camera"|"studio"|"notifications");
         let utility=open && !home && !notes && !custom;
+        let batch=ChildLayout::new(frame.animating);
         let place=|handle:Handle,on:bool,x:i32,y:i32,w:i32,h:i32|{
             let id=unsafe{GetDlgCtrlID(handle)};
             let origin=if workspace_child(id){content}else{body};
-            if on {pos(handle,origin.left+x,origin.top+y,w,h);}
-            show(handle,on);
+            batch.place(handle,on,origin.left+x,origin.top+y,w,h);
         };
         self.layout_motion_header();
-        let gap=p(4);let inner=w-p(60);let tw=((inner-3*gap)/4).min(p(154));let start=(w-(tw*4+gap*3))/2;
-        let configured=core::setting(self,"moduleOrder","");
-        let mut order=Vec::with_capacity(4);
-        for key in configured.split(',').map(str::trim).chain(TABS.iter().map(|t|t.0)){
-            if let Some(i)=TABS.iter().position(|t|t.0==key){if !order.contains(&i){order.push(i);}}
+        let inner=w-p(60);
+        let navigation=self.navigation_slots(content);
+        for &(child,r) in &navigation{
+            batch.place(child,open,r.left,r.top,r.right-r.left,r.bottom-r.top);
         }
-        for(i,tab)in order.iter().enumerate(){place(self.tabs[*tab],open,start+i as i32*(tw+gap),p(51),tw,p(31));}
         place(self.resize,open && !frame.animating,(w-p(70))/2,h-p(15),p(70),p(15));
-        place(self.collapse,open,w-p(28),p(46),p(22),p(26));
         let left=p(30);let top=p(88);let bottom=h-p(17);let main_h=bottom-top;
         let widgets_visible=open && self.page=="widgets";
         let widget_bounds=rect(content.left+left,content.top+top,inner,main_h);
@@ -201,6 +218,7 @@ impl Ui {
         place(self.title,utility,left,top,list_w,p(24));place(self.input_label,utility,ux,top,uw,p(19));
         place(self.detail_label,utility,ux,top+p(50),uw,p(18));
         show(self.more,false);show(self.nav,false);
+        batch.apply();
         self.layout_notes(notes,content);
         self.layout_workspaces(open && workspaces_page::handles(self.page),widget_bounds);
         self.layout_editors(open && editor_views::handles(self.page),widget_bounds);
@@ -209,12 +227,13 @@ impl Ui {
         let issue=self.read_error.is_some() || unsafe{!GetPropW(self.notice,wide("BuddyIssue").as_ptr()).is_null()};
         let notice_y = if utility { bottom-p(51) } else { bottom-p(18) };
         place(self.notice,utility || (open && issue),left,notice_y,inner-p(12),p(17));
+        batch.apply();
         if !frame.animating {
             let mut focus_order=Vec::new();
             if open {
                 focus_order.push(self.resize);
                 focus_order.extend(self.header.iter().copied());
-                focus_order.extend(order.iter().map(|i|self.tabs[*i]));
+                focus_order.extend(navigation.iter().map(|&(h,_)|h).filter(|&h|h!=self.collapse));
                 match self.page {
                     "home"=>{focus_order.extend([self.home_pick,self.buttons[0]]);focus_order.extend(self.home_media_tabs());}
                     "notes"=>{focus_order.extend(self.note_tab_stops());}

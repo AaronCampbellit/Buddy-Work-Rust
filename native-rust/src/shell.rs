@@ -140,7 +140,7 @@ pub fn position(ui:&mut Ui){
         if !island::same_rect(old,host){SetWindowPos(ui.hwnd.0,HWND_TOPMOST,host.left,host.top,host.right-host.left,
             host.bottom-host.top,SWP_NOACTIVATE|SWP_NOOWNERZORDER);}
     }
-    ui.apply_appearance();
+    ui.apply_appearance();crate::note_preview::validate(ui);
     if island::needs_tick() && reduce_motion(ui){
         island::request(ui.expanded,true);
         unsafe{KillTimer(ui.hwnd.0,MOTION_TIMER);}
@@ -148,6 +148,7 @@ pub fn position(ui:&mut Ui){
     render_frame(ui,true);
 }
 pub const COMMIT_PAGE:u32=WM_APP+27;
+pub const OPEN_WIDGET_NOTE:u32=WM_APP+28;
 
 pub fn finish_navigation(ui:&mut Ui){
     if island::frame().animating || !crate::workspace_masked(){return}
@@ -159,6 +160,15 @@ pub fn finish_navigation(ui:&mut Ui){
 }
 fn render_frame(ui:&mut Ui,layout_changed:bool){
     let frame=island::frame();
+    if frame.expanded && !frame.animating && ui.pending_widget_note.is_some(){
+        if crate::note_preview::active(){
+            // Keep the real, full-size note visible during the live HWND swap.
+            ui.layout_motion_header();crate::present_frame(ui.hwnd.0);
+            unsafe{PostMessageW(ui.hwnd.0,OPEN_WIDGET_NOTE,0,0);}
+            return
+        }
+        side_widgets::finish_widget_open(ui);
+    }
     // Keep the last full-width snapshot on screen until the requested page is
     // ready. Laying out and unmasking the obsolete live page first makes the
     // user wait for two complete workspace swaps.
@@ -197,6 +207,9 @@ pub fn animate(ui:&mut Ui){
     island::sample();
     if moving{
         render_frame(ui,false);
+        if ui.pending_widget_note.is_some() && !crate::note_preview::active() && island::frame().progress>0.0{
+            unsafe{PostMessageW(ui.hwnd.0,OPEN_WIDGET_NOTE,0,0);}
+        }
         // The first reveal can create an editor and several HWNDs. Its CSS
         // opacity clock begins once the strip is actually on screen.
         if !island::frame().animating{island::cards_presented();}
@@ -223,7 +236,7 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     if !open && ui.dirty_note && ui.page=="notes"{
         if let Err(reason)=core::save_note(ui){ui.status(&reason);return}
     }
-    if !open{ui.pending_page=None;}
+    if !open{ui.pending_page=None;ui.pending_widget_note=None;crate::note_preview::clear();}
     if !open && explicit{
         INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=false;i.hover_blocked_until=Some(Instant::now()+REOPEN_DELAY);});
     }
@@ -235,7 +248,7 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
         return
     }
     let opening=open && !ui.expanded;
-    if opening {if let Err(reason)=side_widgets::flush(ui){ui.status(&reason);balloon(ui,"Buddy note",&reason);return}}
+    if opening && ui.pending_widget_note.is_none() {if let Err(reason)=side_widgets::flush(ui){ui.status(&reason);balloon(ui,"Buddy note",&reason);return}}
     if !open && ui.expanded {devices::leave(ui.page);ui.collapsed_at=Some(Instant::now());}
     if !open{
         unsafe{if IsChild(ui.hwnd.0,GetFocus())!=0{SetFocus(ui.hwnd.0);}}
@@ -243,7 +256,7 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     ui.expanded=open;ui.opened_by_hover=open && !explicit;
     ui.hidden_until=None;ui.suppressed=false;
     INTERACTION.with(|i|{let mut i=i.borrow_mut();i.left_at=None;if opening{i.pointer_seen=i.inside_union;}if !open{i.pointer_seen=false;i.side_open_hold=false;}});
-    if opening{
+    if opening && ui.pending_widget_note.is_none(){
         let restore_home=ui.collapsed_at.is_some_and(|t|t.elapsed()>=Duration::from_secs(core::setting(ui,"retention","15").parse().unwrap_or(15)));
         if restore_home{ui.navigate("home");}
         if !ui.isolated && !ui.paused && ui.page=="home"{let _=crate::workspace::open_fresh(ui);}
@@ -252,7 +265,21 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     if frame.expanded!=open || frame.animating {
         // The live workspace already occupies its expanded bounds on both legs
         // of a reversal. Keep its snapshot and move only the persistent header.
-        render_frame(ui,!frame.animating || !island::frame().animating);
+        let moving=island::frame().animating;
+        if moving && !frame.animating && (!open || ui.pending_widget_note.is_some()){
+            // Closing already has the expanded workspace laid out. For a pinned
+            // note, its destination is prepared after the first moving frame.
+            crate::mask_workspace_for_animation(ui.hwnd.0,true);
+            if open{
+                // The compact island is already on screen. Count time spent
+                // taking its card away toward the first visible movement.
+                island::first_frame_presented();
+                side_widgets::sync(ui);
+                island::sample();
+            }
+            ui.layout_motion_header();
+            crate::present_frame(ui.hwnd.0);
+        }else{render_frame(ui,!frame.animating || !moving);}
     }
     unsafe{
         if open{SetTimer(ui.hwnd.0,2,50,None);}else{KillTimer(ui.hwnd.0,2);}

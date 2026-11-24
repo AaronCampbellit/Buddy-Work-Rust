@@ -186,6 +186,26 @@ impl Model {
             if t>=1.0{self.reveal_since=None;}
         }
     }
+    fn sample_display_frame(&mut self,now:Instant){
+        if let Some(m)=self.motion.as_mut(){
+            if let Some(since)=m.since{
+                let ms=now.saturating_duration_since(since).as_secs_f32()*1000.0;
+                let distance=m.target-m.from;
+                let next=bezier(ms/m.duration,0.2,0.7,0.2,1.0);
+                // Win32 timers can be delayed by live controls or the compositor.
+                // Preserve the easing curve without skipping most of a transition.
+                if distance.abs()>0.01{
+                    let previous=(self.p-m.from)/distance;
+                    if next>previous+0.18{
+                        let max_time=bezier(previous+0.18,0.7,0.2,1.0,0.2)*m.duration;
+                        m.since=Some(now-std::time::Duration::from_secs_f32(max_time/1000.0));
+                    }
+                }
+            }
+        }
+        self.sample(now);
+    }
+
     fn first_frame_presented(&mut self,now:Instant){
         if let Some(motion)=self.motion.as_mut(){motion.since.get_or_insert(now);}
     }
@@ -222,6 +242,7 @@ pub fn configure(layout:Layout,expanded:bool){
         slot@None=>*slot=Some(Model::new(layout,expanded))
     });
 }
+pub(crate) fn current_layout()->Option<Layout>{MODEL.with(|s|s.borrow().as_ref().map(|m|m.layout.clone()))}
 pub fn request(open:bool,immediate:bool){
     MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.request(open,immediate);});
 }
@@ -234,7 +255,7 @@ pub fn cards_presented(){
     });
 }
 pub fn sample(){
-    MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.sample(Instant::now());});
+    MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.sample_display_frame(Instant::now());});
 }
 #[cfg(test)]
 pub fn sample_after(elapsed:std::time::Duration){
@@ -356,6 +377,28 @@ mod tests {
         model.sample(ready+Duration::from_millis(220));
         assert_eq!(model.p,1.0);
         assert!(!model.needs_tick());
+    }
+
+    #[test]
+    fn delayed_display_ticks_preserve_intermediate_widths_before_and_after_a_reversal(){
+        let start=Instant::now();
+        let layout=Layout::new(rect(0,0,1920,1080),96,100,Placement::Center,300,&[]);
+        let mut model=Model::new(layout,true);
+        model.request(false,false);model.first_frame_presented(start);
+        let mut now=start;
+        for _ in 0..3{
+            now+=Duration::from_millis(150);
+            let previous=model.p;model.sample_display_frame(now);
+            assert!(model.p<previous && previous-model.p<0.181);
+        }
+        let reversed_at=model.p;
+        model.request(true,false);model.first_frame_presented(now);
+        for _ in 0..8{
+            now+=Duration::from_millis(150);
+            let previous=model.p;model.sample_display_frame(now);
+            assert!(model.p>=previous && model.p-previous<(1.0-reversed_at)*0.181);
+        }
+        assert_eq!(model.p,1.0);assert!(!model.needs_tick());
     }
 
     #[test]

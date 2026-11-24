@@ -43,7 +43,7 @@ pub(crate) fn window_text(h:Handle,max:usize)->String{
         let n=GetWindowTextW(h,s.as_mut_ptr(),s.len() as i32).max(0) as usize;String::from_utf16_lossy(&s[..n])}
 }
 fn label(h:Handle,s:&str){unsafe{SetWindowTextW(h,wide(s).as_ptr());}}
-fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
+pub(crate) fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
 fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->Handle{
     unsafe {
         let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());
@@ -53,7 +53,7 @@ fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->H
         child
     }
 }
-fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
+pub(crate) fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
     let mut r=windows_sys::Win32::Foundation::RECT::default();
     if GetWindowRect(h,&mut r)==0{return}
     let mut point=windows_sys::Win32::Foundation::POINT{x:r.left,y:r.top};
@@ -62,6 +62,52 @@ fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
         SetWindowPos(h,std::ptr::null_mut(),x,y,w.max(1),ht.max(1),SWP_NOACTIVATE|SWP_NOZORDER);
     }
 }}
+/// The layered motion bitmap paints these sibling HWNDs. Stage their real hit
+/// targets together, without painting each individual move on the display.
+#[derive(Default)]
+struct ChildLayout {
+    changes:std::cell::RefCell<Vec<(Handle,i32,i32,i32,i32,u32)>>,
+    moving:bool,
+}
+impl ChildLayout {
+    fn new(moving:bool)->Self{Self{moving,..Self::default()}}
+    fn place(&self,h:Handle,on:bool,x:i32,y:i32,w:i32,height:i32){
+        if !self.moving {
+            if on{pos(h,x,y,w,height);}
+            show(h,on);
+            return
+        }
+        unsafe{
+            let visible=GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0;
+            let mut flags=SWP_NOACTIVATE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_NOREDRAW|SWP_NOCOPYBITS;
+            let (w,height)=(w.max(1),height.max(1));
+            let mut changed=false;
+            if on{
+                let mut r=windows_sys::Win32::Foundation::RECT::default();
+                if GetWindowRect(h,&mut r)!=0{
+                    let mut origin=windows_sys::Win32::Foundation::POINT{x:r.left,y:r.top};
+                    ScreenToClient(GetParent(h),&mut origin);
+                    changed=(origin.x,origin.y,r.right-r.left,r.bottom-r.top)!=(x,y,w,height);
+                }
+            }
+            if !changed{flags|=SWP_NOMOVE|SWP_NOSIZE;}
+            if on!=visible{flags|=if on{SWP_SHOWWINDOW}else{SWP_HIDEWINDOW};}
+            if changed || on!=visible{self.changes.borrow_mut().push((h,x,y,w,height,flags));}
+        }
+    }
+    fn apply(&self){unsafe{
+        let changes=self.changes.take();
+        if changes.is_empty(){return}
+        let mut batch=BeginDeferWindowPos(changes.len() as i32);
+        for &(h,x,y,w,height,flags) in &changes{
+            if batch.is_null(){break}
+            batch=DeferWindowPos(batch,h,std::ptr::null_mut(),x,y,w,height,flags);
+        }
+        if batch.is_null() || EndDeferWindowPos(batch)==0{
+            for (h,x,y,w,height,flags) in changes{SetWindowPos(h,std::ptr::null_mut(),x,y,w,height,flags);}
+        }
+    }}
+}
 // Win32 asks for these brushes synchronously while a workspace switch is
 // modifying Ui. The small paint state lives independently of that borrow.
 #[derive(Clone, Copy)]
@@ -88,6 +134,7 @@ pub(crate) unsafe fn control_brush(hwnd: Handle, msg: u32, dc: HDC, child: Handl
 }
 pub struct Ui {
     pub hwnd:HWND,pub profile:PathBuf,pub records:storage::Records,pub page:&'static str,pub isolated:bool,
+    pub(crate) pending_widget_note:Option<crate::side_widgets::WidgetOpen>,
     pub(crate) pending_page:Option<&'static str>,
     pub(crate) read_error:Option<String>,pub(crate) paused:bool,pub(crate) expanded:bool,
     pub(crate) collapsed_at:Option<Instant>,pub(crate) opened_by_hover:bool,pub(crate) hidden_until:Option<Instant>,
@@ -111,6 +158,9 @@ pub struct Ui {
 impl Ui{
     pub(crate) fn new(hwnd:HWND,profile:PathBuf,isolated:bool)->Result<Self,String>{
         let (records,read_error)=match storage::load(&profile){Ok(s)=>(s,None),Err(e)=>(Default::default(),Some(e))};
+        Self::from_records(hwnd,profile,isolated,records,read_error)
+    }
+    pub(crate) fn from_records(hwnd:HWND,profile:PathBuf,isolated:bool,records:storage::Records,read_error:Option<String>)->Result<Self,String>{
         let fonts=island_view::fonts(1.0);
         let font=fonts[0];
         let head_font=fonts[2];
@@ -147,7 +197,7 @@ impl Ui{
         if [nav,list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
         unsafe {SendMessageW(input_box,EM_SETLIMITTEXT,32768,0);SendMessageW(detail_box,EM_SETLIMITTEXT,256*1024,0);}
         let home_note=records.get("settings").and_then(|rows|rows.iter().find(|r|r.first().is_some_and(|k|k=="homeNote"))).and_then(|r|r.get(1)).cloned();
-        Ok(Self{hwnd,profile,records,page:"home",isolated,pending_page:None,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
+        Ok(Self{hwnd,profile,records,page:"home",isolated,pending_widget_note:None,pending_page:None,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
             hidden_until:None,camera_check:Instant::now(),call_state:None,locked:false,suppressed:false,new_note:false,dirty_note:false,due_note:None,active_note:None,search:String::new(),note_ids:vec![],
             last_removed:None,actions:vec![],navigation:PAGES.iter().map(|p|p.0).collect(),nav,list,input_box,detail_box,title,input_label,detail_label,notice,more,more_go,compact,compact_tools,buttons,
             images,widgets_page:Default::default(),note_controls:Default::default(),workspaces_page:Default::default(),preferences:Default::default(),editor_views:Default::default(),home_media:Default::default(),devices_view:Default::default(),tab_order:Default::default(),tabs,header,collapse,resize,home_pick,home_note,search_box,fonts,appearance:(0xffffff,0xffffff,0x222222,0x814c18),font_size:100,zoom:100,quitting:false})
@@ -196,13 +246,20 @@ impl Ui{
         self.layout();
     }
     pub fn navigate(&mut self,page:&'static str){
+        if self.load_page(page){
+            self.layout();
+            crate::repaint_after_update(self.hwnd.0);
+        }
+    }
+    pub(crate) fn load_page(&mut self,page:&'static str)->bool{
         self.pending_page=None;
-        if !PAGES.iter().any(|p|p.0==page){return;}
+        if self.pending_widget_note.take().is_some(){crate::note_preview::clear();}
+        if !PAGES.iter().any(|p|p.0==page){return false;}
         if self.page=="notes" && self.dirty_note {
             if let Err(message)=core::save_note(self) {
                 let index=self.navigation.iter().position(|&p|p==self.page).unwrap();
                 unsafe{SendMessageW(self.nav,LB_SETCURSEL,index,0);}
-                self.error(&message);return;
+                self.error(&message);return false;
             }
         }
         if self.page!=page {devices::leave(self.page);}
@@ -228,8 +285,7 @@ impl Ui{
         let message=match page{"audio"|"camera"|"studio"|"ocr"=>devices::render(self,page),"files"|"quick"|"clipboard"|"markup"|"downloads"=>workspace::render(self,page),"media"|"notifications"|"rewrite"|"diagnostics"=>activity::render(self,page),_=>core::render(self,page)};
         if page=="notes" && window_text(self.search_box,32768)!=self.search {label(self.search_box,&self.search);}
         self.status(&self.read_error.clone().unwrap_or(message));
-        self.layout();
-        crate::repaint_after_update(self.hwnd.0);
+        true
     }
     pub(crate) fn run_action(&mut self,key:&str){
         let page=self.page;

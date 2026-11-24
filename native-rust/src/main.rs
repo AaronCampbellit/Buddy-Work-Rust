@@ -4,6 +4,7 @@ mod chrome;
 mod inline_images;
 mod island;
 mod motion_surface;
+mod note_preview;
 #[cfg(test)]
 mod island_capture_test;
 mod side_widgets;
@@ -69,7 +70,13 @@ fn present_frame(hwnd:HWND){
 }
 // While the workspace is fading, its native controls are clipped. Remember
 // navigation presses on the visible snapshot until the matching release.
-thread_local!{static NAV_PRESS:Cell<HWND>=const{Cell::new(null_mut())};}
+thread_local!{
+    static NAV_PRESS:Cell<HWND>=const{Cell::new(null_mut())};
+    static REOPEN_PRESS:Cell<Option<(i32,i32)>>=const{Cell::new(None)};
+}
+fn still_a_click(from:(i32,i32),x:i32,y:i32)->bool{
+    unsafe{(x-from.0).abs()<GetSystemMetrics(SM_CXDRAG).max(1) && (y-from.1).abs()<GetSystemMetrics(SM_CYDRAG).max(1)}
+}
 const CLASS:&str="BuddyRustWorkIsland";
 unsafe extern "system" fn editor_proc(hwnd: HWND, message: u32, wp: usize, lp: isize, id: usize, _: usize) -> isize {
     if message==WM_NCDESTROY { RemoveWindowSubclass(hwnd,Some(editor_proc),id); }
@@ -217,7 +224,8 @@ unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
     // cannot consume the animation while waiting for the first visible blend.
     let mut bounds=RECT::default();
     if GetClientRect(hwnd,&mut bounds)==0{return}
-    let Some(page)=read_ui(|u|u.page) else{return};
+    if note_preview::paint(dc,frame,alpha){return}
+    let Some(page)=read_ui(|u|u.pending_widget_note.is_none().then_some(u.page)).flatten() else{return};
     let fresh=FADE.with(|f|{
         let s=f.borrow();!s.bitmap.as_ref().is_some_and(|b|b.width==bounds.right&&b.height==bounds.bottom&&b.page==page)
     });
@@ -267,6 +275,7 @@ unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
 unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isize{
     match msg{
         WM_NOTIFY if wp==inline_images::NOTE_EDITOR as usize=>inline_images::link_notification(hwnd,lp),
+        shell::OPEN_WIDGET_NOTE=>{with_ui(side_widgets::finish_widget_open);0},
         side_widgets::MESSAGE=>{with_ui(|u|side_widgets::command(u,wp));0},
         shell::COMMIT_PAGE=>{with_ui(shell::finish_navigation);0},
         devices::OCR_DONE=>{with_ui(devices::finish_scan);0},
@@ -304,6 +313,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         WM_ERASEBKGND=>1,
         WM_SETTINGCHANGE|WM_THEMECHANGED=>{with_ui(|u|{
             u.apply_appearance();
+            note_preview::validate(u);
             shell::motion_setting_changed(u);
             InvalidateRect(hwnd,null(),0);
         });0},
@@ -311,7 +321,11 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
             let(x,y)=local_point(lp);let mut handled=false;
             with_ui(|u|{
                 handled=shell::resize_down(u,x,y);
-                if !handled && island::frame().animating{
+                if !handled && !u.expanded && island::contains(&island::frame(),x,y){
+                    // The real compact button can appear between this down and
+                    // its up. Keep the matching release on the host.
+                    SetCapture(hwnd);REOPEN_PRESS.set(Some((x,y)));handled=true;
+                }else if !handled && island::frame().animating{
                     if let Some(child)=u.visible_navigation_at(x,y){
                         SetCapture(hwnd);NAV_PRESS.set(child);handled=true;
                     }
@@ -321,6 +335,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         },
         WM_MOUSELEAVE=>{with_ui(|u|if u.isolated{shell::pointer_at(u,false,false)}else{shell::visibility(u,false)});0},
         WM_MOUSEMOVE=>{let(x,y)=local_point(lp);
+            if REOPEN_PRESS.get().is_some_and(|from|!still_a_click(from,x,y)){REOPEN_PRESS.set(None);}
             let mut track=TRACKMOUSEEVENT{cbSize:std::mem::size_of::<TRACKMOUSEEVENT>() as _,dwFlags:TME_LEAVE,hwndTrack:hwnd,dwHoverTime:0};
             TrackMouseEvent(&mut track);
             with_ui(|u|{if !shell::resize_move(u,x,y){let body=island::contains(&island::frame(),x,y);shell::pointer_at(u,body,body);}});0},
@@ -330,13 +345,25 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
                 if GetCapture()==hwnd{ReleaseCapture();}
                 let mut activate=false;
                 with_ui(|u|activate=u.visible_navigation_at(x,y)==Some(pressed));
-                if activate{SetFocus(pressed);SendMessageW(pressed,BM_CLICK,0,0);}
-            }else{
-                with_ui(|u|{if GetCapture()==hwnd{shell::resize_up(u);}else if !u.expanded && island::contains(&island::frame(),x,y){shell::expand(u,true);}});
+                if activate{
+                    if GetWindowLongW(pressed,GWL_STYLE) as u32&WS_VISIBLE!=0{
+                        SetFocus(pressed);SendMessageW(pressed,BM_CLICK,0,0);
+                    }else{
+                        // The pinned-note preview can already show this tab before
+                        // its native button appears. Dispatch its normal command.
+                        SendMessageW(hwnd,WM_COMMAND,GetDlgCtrlID(pressed) as usize,pressed as isize);
+                    }
+                }
+            }else if let Some(from)=REOPEN_PRESS.take(){
+                if GetCapture()==hwnd{ReleaseCapture();}
+                with_ui(|u|if !u.expanded && still_a_click(from,x,y) && island::contains(&island::frame(),x,y){shell::expand(u,true);});
+            }else if GetCapture()==hwnd{
+                with_ui(shell::resize_up);
             }
             0
         },
-        WM_CAPTURECHANGED=>{NAV_PRESS.set(null_mut());with_ui(shell::resize_up);0},
+        WM_CANCELMODE=>{REOPEN_PRESS.set(None);NAV_PRESS.set(null_mut());DefWindowProcW(hwnd,msg,wp,lp)},
+        WM_CAPTURECHANGED=>{REOPEN_PRESS.set(None);NAV_PRESS.set(null_mut());with_ui(shell::resize_up);0},
         WM_SETCURSOR=>{let mut p=POINT::default();GetCursorPos(&mut p);ScreenToClient(hwnd,&mut p);if wp==hwnd as usize && shell::resize_grip(p.x,p.y){SetCursor(LoadCursorW(null_mut(),IDC_SIZENS));1}else{DefWindowProcW(hwnd,msg,wp,lp)}},
         WM_ACTIVATE=>{if (wp as u16)as u32==WA_INACTIVE{with_ui(|u|shell::deactivated(u,lp as _));}DefWindowProcW(hwnd,msg,wp,lp)},
         WM_DPICHANGED|WM_DISPLAYCHANGE=>{with_ui(shell::position);0},
@@ -363,7 +390,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         });0},
         WM_QUERYENDSESSION=>1,
         WM_ENDSESSION if wp!=0=>{with_ui(|u|{let _=side_widgets::flush(u);if u.dirty_note{let _=core::save_note(u);}devices::stop();activity::stop();});0},
-        WM_DESTROY=>{motion_surface::end(hwnd);mask_workspace_for_animation(hwnd,false);side_widgets::close();with_ui(|u|{shell::tray(u,false);if !u.isolated{WTSUnRegisterSessionNotification(hwnd);}UnregisterHotKey(hwnd,1);devices::stop();activity::stop();});PostQuitMessage(0);0},
+        WM_DESTROY=>{note_preview::clear();motion_surface::end(hwnd);mask_workspace_for_animation(hwnd,false);side_widgets::close();with_ui(|u|{shell::tray(u,false);if !u.isolated{WTSUnRegisterSessionNotification(hwnd);}UnregisterHotKey(hwnd,1);devices::stop();activity::stop();});PostQuitMessage(0);0},
         _=>DefWindowProcW(hwnd,msg,wp,lp)
     }
 }
