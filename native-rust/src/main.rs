@@ -3,6 +3,7 @@ mod activity;
 mod chrome;
 mod inline_images;
 mod island;
+mod motion_surface;
 #[cfg(test)]
 mod island_capture_test;
 mod side_widgets;
@@ -19,7 +20,34 @@ use windows_sys::Win32::{Foundation::*,Graphics::Gdi::*,System::{Com::*,RemoteDe
 use ui::wide;
 
 thread_local!{static WINDOW:RefCell<Option<Ui>>=const{RefCell::new(None)};}
-fn with_ui(f:impl FnOnce(&mut Ui)){WINDOW.with(|cell|{if let Ok(mut slot)=cell.try_borrow_mut(){if let Some(ui)=slot.as_mut(){f(ui);}}});}
+thread_local!{static FRAME_TO_PRESENT:Cell<HWND>=const{Cell::new(null_mut())};}
+fn with_ui(f:impl FnOnce(&mut Ui)){
+    let completed=WINDOW.with(|cell|{
+        let Ok(mut slot)=cell.try_borrow_mut() else{return false};
+        if let Some(ui)=slot.as_mut(){f(ui);}
+        true
+    });
+    if completed{
+        let hwnd=FRAME_TO_PRESENT.replace(null_mut());
+        if !hwnd.is_null(){unsafe{
+            // Moving children or changing their regions can synchronously paint
+            // while layout owns Ui. Present the complete new geometry only
+            // after its owner-drawn children can paint from the new state.
+            let frame=island::frame();
+            if (frame.animating || workspace_masked()) && motion_surface::present(hwnd,&frame){
+                island::apply_region(hwnd,&frame);
+                return
+            }
+            motion_surface::end(hwnd);
+            island::apply_region(hwnd,&frame);
+            RedrawWindow(hwnd,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
+        }}
+    }
+}
+fn present_frame(hwnd:HWND){
+    if WINDOW.with(|s|s.try_borrow().is_err()){FRAME_TO_PRESENT.set(hwnd);}
+    else{island::apply_region(hwnd,&island::frame());unsafe{InvalidateRect(hwnd,null(),0);}}
+}
 // While the workspace is fading, its native controls are clipped. Remember
 // navigation presses on the visible snapshot until the matching release.
 thread_local!{static NAV_PRESS:Cell<HWND>=const{Cell::new(null_mut())};}
@@ -69,6 +97,7 @@ impl Drop for WorkspaceBitmap {
 struct Fade { active:bool, masks:Vec<FadeMask>, bitmap:Option<WorkspaceBitmap>, frame_buffer:Option<WorkspaceBitmap> }
 thread_local! {static FADE:RefCell<Fade>=RefCell::new(Fade::default());}
 
+fn workspace_masked()->bool{FADE.with(|state|state.borrow().active)}
 pub(crate) fn workspace_layout_changed(hwnd:HWND){
     if FADE.with(|f|f.borrow().active){
         mask_workspace_for_animation(hwnd,true);
@@ -189,11 +218,14 @@ unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
     });
 }
 unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
+    // Synchronous WM_PAINT during child layout cannot obtain a coherent
+    // surface or enter owner-draw handlers. The outer layout invalidates again.
+    if WINDOW.with(|s|s.try_borrow().is_err()){return}
     let saved=SaveDC(dc);
     let mask=CreateRectRgn(0,0,0,0);
     if !mask.is_null(){if GetWindowRgn(hwnd,mask)>0{ExtSelectClipRgn(dc,mask,RGN_AND);}DeleteObject(mask);}
     let frame=island::frame();
-    if frame.animating {
+    if frame.animating || workspace_masked() {
         // Paint the surface and translucent workspace together. Painting them
         // separately to the window briefly exposes the empty background.
         let mut client=RECT::default();GetClientRect(hwnd,&mut client);
@@ -219,6 +251,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
     match msg{
         WM_NOTIFY if wp==inline_images::NOTE_EDITOR as usize=>inline_images::link_notification(hwnd,lp),
         side_widgets::MESSAGE=>{with_ui(|u|side_widgets::command(u,wp));0},
+        shell::COMMIT_PAGE=>{with_ui(shell::finish_navigation);0},
         devices::OCR_DONE=>{with_ui(devices::finish_scan);0},
         WM_HSCROLL=>{with_ui(|u|u.home_seek_scroll(lp as _,wp as u16));0},
         WM_COMMAND=>{with_ui(|u|match (wp&0xffff) as u16{
@@ -236,7 +269,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
             });
             0
         },
-        WM_PAINT=>{let mut ps=PAINTSTRUCT::default();let dc=BeginPaint(hwnd,&mut ps);if !dc.is_null(){paint_to(hwnd,dc,false);}EndPaint(hwnd,&ps);0},
+        WM_PAINT=>{let mut ps=PAINTSTRUCT::default();let dc=BeginPaint(hwnd,&mut ps);if !dc.is_null() && !motion_surface::active(hwnd){paint_to(hwnd,dc,false);}EndPaint(hwnd,&ps);0},
         WM_PRINT|WM_PRINTCLIENT=>{if wp!=0{paint_to(hwnd,wp as HDC,lp as i32&PRF_CHILDREN!=0);}0},
         WM_DRAWITEM=>{let mut drawn=false;with_ui(|u|drawn=u.draw_item(lp));if drawn{1}else{DefWindowProcW(hwnd,msg,wp,lp)}},
         WM_CTLCOLORSTATIC|WM_CTLCOLORLISTBOX|WM_CTLCOLOREDIT=>{let mut brush=0;with_ui(|u|brush=u.color(msg,wp as _,lp as _));if brush!=0{brush}else{DefWindowProcW(hwnd,msg,wp,lp)}},
@@ -269,7 +302,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
                 if GetCapture()==hwnd{ReleaseCapture();}
                 let mut activate=false;
                 with_ui(|u|activate=u.visible_navigation_at(x,y)==Some(pressed));
-                if activate{SetFocus(pressed);PostMessageW(pressed,BM_CLICK,0,0);}
+                if activate{SetFocus(pressed);SendMessageW(pressed,BM_CLICK,0,0);}
             }else{
                 with_ui(|u|{if GetCapture()==hwnd{shell::resize_up(u);}else if !u.expanded && island::contains(&island::frame(),x,y){shell::expand(u,true);}});
             }
@@ -302,7 +335,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         });0},
         WM_QUERYENDSESSION=>1,
         WM_ENDSESSION if wp!=0=>{with_ui(|u|{let _=side_widgets::flush(u);if u.dirty_note{let _=core::save_note(u);}devices::stop();activity::stop();});0},
-        WM_DESTROY=>{mask_workspace_for_animation(hwnd,false);side_widgets::close();with_ui(|u|{shell::tray(u,false);if !u.isolated{WTSUnRegisterSessionNotification(hwnd);}UnregisterHotKey(hwnd,1);devices::stop();activity::stop();});PostQuitMessage(0);0},
+        WM_DESTROY=>{motion_surface::end(hwnd);mask_workspace_for_animation(hwnd,false);side_widgets::close();with_ui(|u|{shell::tray(u,false);if !u.isolated{WTSUnRegisterSessionNotification(hwnd);}UnregisterHotKey(hwnd,1);devices::stop();activity::stop();});PostQuitMessage(0);0},
         _=>DefWindowProcW(hwnd,msg,wp,lp)
     }
 }

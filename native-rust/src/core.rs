@@ -311,7 +311,13 @@ fn settings(ui:&mut Ui,key:&str)->Result<String,String>{
     if k=="display"{shell::remember_display(ui,&val);}else{set(ui,k,&val);}if k=="moduleOrder"{ui.reorder_navigation();}shell::position(ui);settings_rows(ui);ui.select_row(n);ui.set_input(&val);ui.save()?;Ok("Setting saved.".into())
 }
 pub fn render(ui:&mut Ui,page:&str)->String{match page{
-    "notes"=>{note_rows(ui);fill_note(ui);if ui.active_note.is_none()&&!ui.note_ids.is_empty(){ui.active_note=Some(ui.note_ids[0].clone());ui.select_row(0);fill_note(ui);}},
+    "notes"=>{
+        note_rows(ui);
+        if ui.active_note.is_none(){
+            if let Some(first)=ui.note_ids.first(){ui.active_note=Some(first.clone());ui.select_row(0);}
+        }
+        fill_note(ui);
+    },
     "settings"=>{settings_rows(ui);ui.select_row(0);let _=settings(ui,"select");},
     "widgets"=>{ui.set_rows(&timer_rows(ui));ui.set_detail(&widget_caption(ui));},
     _=>{let rows=ui.records.get("notes").into_iter().flatten().filter(|r|r.len()>=7).take(30).map(|r|show(r,1).to_string()).collect::<Vec<_>>();ui.set_rows(&rows);ui.set_detail(&home_detail(ui));}

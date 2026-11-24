@@ -147,13 +147,31 @@ pub fn position(ui:&mut Ui){
     }
     render_frame(ui,true);
 }
+pub const COMMIT_PAGE:u32=WM_APP+27;
+
+pub fn finish_navigation(ui:&mut Ui){
+    if island::frame().animating || !crate::workspace_masked(){return}
+    crate::mask_workspace_for_animation(ui.hwnd.0,false);
+    if let Some(page)=ui.pending_page.take(){
+        if ui.expanded && !ui.suppressed && !ui.locked && !ui.paused{ui.navigate(page);crate::present_frame(ui.hwnd.0);return}
+    }
+    ui.layout();crate::present_frame(ui.hwnd.0);
+}
 fn render_frame(ui:&mut Ui,layout_changed:bool){
     let frame=island::frame();
+    // Keep the last full-width snapshot on screen until the requested page is
+    // ready. Laying out and unmasking the obsolete live page first makes the
+    // user wait for two complete workspace swaps.
+    if !frame.animating && frame.expanded && ui.pending_page.is_some() && crate::workspace_masked(){
+        ui.layout_motion_header();
+        crate::present_frame(ui.hwnd.0);
+        unsafe{PostMessageW(ui.hwnd.0,COMMIT_PAGE,0,0);}
+        return
+    }
     let full_layout=layout_changed || !frame.animating;
     if full_layout{
         crate::mask_workspace_for_animation(ui.hwnd.0,frame.animating);
     }
-    island::apply_region(ui.hwnd.0,&frame);
     if full_layout{
         ui.layout();
         if !frame.expanded && !frame.animating && unsafe{GetFocus()}==ui.hwnd.0{
@@ -165,7 +183,8 @@ fn render_frame(ui:&mut Ui,layout_changed:bool){
         // Moving/repainting every live editor each frame causes missed first frames.
         ui.layout_motion_header();
     }
-    unsafe{InvalidateRect(ui.hwnd.0,null(),0);}
+    crate::present_frame(ui.hwnd.0);
+
 }
 
 #[cfg(test)]
@@ -204,6 +223,7 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     if !open && ui.dirty_note && ui.page=="notes"{
         if let Err(reason)=core::save_note(ui){ui.status(&reason);return}
     }
+    if !open{ui.pending_page=None;}
     if !open && explicit{
         INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=false;i.hover_blocked_until=Some(Instant::now()+REOPEN_DELAY);});
     }
@@ -308,7 +328,20 @@ pub fn tray(ui:&Ui,create:bool){if ui.isolated{return}let mut n=tray_data(ui);un
 pub fn balloon(ui:&Ui,title:&str,body:&str){if ui.isolated{return}let mut n=tray_data(ui);n.uFlags=NIF_INFO;n.dwInfoFlags=NIIF_INFO;
     for (slot,ch) in n.szInfoTitle.iter_mut().take(63).zip(title.encode_utf16()){*slot=ch;}for (slot,ch) in n.szInfo.iter_mut().take(255).zip(body.encode_utf16()){*slot=ch;}unsafe{Shell_NotifyIconW(NIM_MODIFY,&n);}}
 pub fn menu(ui:&mut Ui){unsafe{
+    const FIRST_WORKSPACE: i32 = 100;
     let m=CreatePopupMenu();if m.is_null(){return}let items=[(1,"Open Buddy"),(2,"Settings"),(3,if ui.paused{"Resume services"}else{"Pause services"}),(4,"Hide temporarily"),(5,"Next display"),(6,"Updates and diagnostics"),(7,"Quit Buddy")];for (id,name) in items{AppendMenuW(m,MF_STRING,id,wide(name).as_ptr());}
+    if !ui.paused && !ui.locked && !ui.suppressed {
+        let pages = CreatePopupMenu();
+        if !pages.is_null() {
+            for (index, &(page, label)) in crate::ui::PAGES.iter().enumerate() {
+                let checked = if ui.expanded && ui.page == page { MF_CHECKED } else { 0 };
+                AppendMenuW(pages, MF_STRING | checked, FIRST_WORKSPACE as usize + index, wide(label).as_ptr());
+            }
+            if AppendMenuW(m, MF_POPUP, pages as usize, wide("Workspaces").as_ptr()) == 0 {
+                DestroyMenu(pages);
+            }
+        }
+    }
     if core::due_title(ui).is_some(){
         for(id,name)in [(30,"Open reminder"),(31,"Snooze reminder 5 minutes"),(32,"Dismiss reminder")]{AppendMenuW(m,MF_STRING,id,wide(name).as_ptr());}
     }
@@ -345,7 +378,14 @@ pub fn menu(ui:&mut Ui){unsafe{
         24=>{expand(ui,true);if let Err(e)=crate::workspace::open_widget(ui){ui.status(&e);}},
         25=>{if let Err(e)=crate::workspace::copy_widget(ui){ui.status(&e);balloon(ui,"Buddy clipboard",&e);}},
         30=>{if let Some(id)=ui.due_note.clone(){expand(ui,true);ui.navigate("notes");if ui.page=="notes"&&!ui.dirty_note{if let Some(i)=ui.note_ids.iter().position(|s|s==&id){ui.select_row(i);ui.run_action("select");}}}},
-        31|32=>{if let Err(e)=core::acknowledge_reminder(ui,cmd==31){ui.status(&e);balloon(ui,"Buddy reminder",&e);}core::tick(ui);},_=>{}}
+        31|32=>{if let Err(e)=core::acknowledge_reminder(ui,cmd==31){ui.status(&e);balloon(ui,"Buddy reminder",&e);}core::tick(ui);},
+        id if id >= FIRST_WORKSPACE && !ui.paused && !ui.locked && !ui.suppressed => {
+            if let Some(&(page, _)) = crate::ui::PAGES.get((id - FIRST_WORKSPACE) as usize) {
+                expand(ui, true);
+                ui.select_workspace(page);
+            }
+        }
+        _=>{}}
 }}
 fn foreground_hidden(ui:&Ui)->bool{unsafe{
     let foreground=GetForegroundWindow();if foreground.is_null()||foreground==ui.hwnd.0{return false}

@@ -52,20 +52,29 @@ impl Ui {
             if let Some((key,_))=actions.get(i){self.run_action(key)}else if let Some(page)=pages.get(i-actions.len()){self.navigate(page)}
         }
     }
+    pub(crate) fn select_workspace(&mut self,page:&'static str){
+        // Building a Rich Edit page can take longer than the remaining frames.
+        // Keep only the latest tab or header choice while the old page is fading.
+        self.pending_page=None;
+        if !self.expanded || self.page==page{return}
+        if crate::island::frame().animating || crate::workspace_masked(){
+            self.pending_page=Some(page);
+        }else{self.navigate(page);}
+    }
     pub(super) fn island_command(&mut self,id:u16,code:u16)->bool{
         if id==SEARCH && code==EN_CHANGE as u16 && self.page=="notes"{
             self.search=window_text(self.search_box,32768);core::note_rows(self);self.redraw();return true
         }
         if code!=BN_CLICKED as u16{return false}
         if let Some(tab)=id.checked_sub(TAB).and_then(|i|TABS.get(i as usize)){
-            if self.page!=tab.0{self.navigate(tab.0);}
+            self.select_workspace(tab.0);
             return true
         }
         if let Some(action)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){
             if action.0=="notifications"{notification_popup::toggle(self)}
             else{
                 if !self.expanded{crate::shell::expand(self,true);}
-                if self.page!=action.0{self.navigate(action.0);}
+                self.select_workspace(action.0);
             }
             return true
         }

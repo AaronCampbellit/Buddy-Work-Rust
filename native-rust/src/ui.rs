@@ -57,6 +57,7 @@ fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
 }}
 pub struct Ui {
     pub hwnd:HWND,pub profile:PathBuf,pub records:storage::Records,pub page:&'static str,pub isolated:bool,
+    pub(crate) pending_page:Option<&'static str>,
     pub(crate) read_error:Option<String>,pub(crate) paused:bool,pub(crate) expanded:bool,
     pub(crate) collapsed_at:Option<Instant>,pub(crate) opened_by_hover:bool,pub(crate) hidden_until:Option<Instant>,
     pub(crate) camera_check:Instant,pub(crate) call_state:Option<String>,pub(crate) locked:bool,pub(crate) suppressed:bool,pub(crate) new_note:bool,pub(crate) dirty_note:bool,pub(crate) due_note:Option<String>,
@@ -113,7 +114,7 @@ impl Ui{
         if [nav,list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
         unsafe {SendMessageW(input_box,EM_SETLIMITTEXT,32768,0);SendMessageW(detail_box,EM_SETLIMITTEXT,256*1024,0);}
         let home_note=records.get("settings").and_then(|rows|rows.iter().find(|r|r.first().is_some_and(|k|k=="homeNote"))).and_then(|r|r.get(1)).cloned();
-        Ok(Self{hwnd,profile,records,page:"home",isolated,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
+        Ok(Self{hwnd,profile,records,page:"home",isolated,pending_page:None,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
             hidden_until:None,camera_check:Instant::now(),call_state:None,locked:false,suppressed:false,new_note:false,dirty_note:false,due_note:None,active_note:None,search:String::new(),note_ids:vec![],
             last_removed:None,actions:vec![],navigation:PAGES.iter().map(|p|p.0).collect(),nav,list,input_box,detail_box,title,input_label,detail_label,notice,more,more_go,compact,compact_tools,buttons,
             images,widgets_page:Default::default(),note_controls:Default::default(),workspaces_page:Default::default(),preferences:Default::default(),editor_views:Default::default(),home_media:Default::default(),devices_view:Default::default(),tab_order:Default::default(),tabs,header,collapse,resize,home_pick,home_note,search_box,fonts,appearance:(0xffffff,0xffffff,0x222222,0x814c18),font_size:100,zoom:100,quitting:false})
@@ -162,6 +163,7 @@ impl Ui{
         self.layout();
     }
     pub fn navigate(&mut self,page:&'static str){
+        self.pending_page=None;
         if !PAGES.iter().any(|p|p.0==page){return;}
         if self.page=="notes" && self.dirty_note {
             if let Err(message)=core::save_note(self) {
@@ -172,7 +174,11 @@ impl Ui{
         }
         if self.page!=page {devices::leave(self.page);}
         unsafe{RemovePropW(self.notice,wide("BuddyIssue").as_ptr());}
-        self.page=page;self.set_rows(&[]);self.set_input("");self.set_detail("");self.dirty_note=false;
+        self.page=page;self.set_rows(&[]);
+        // Notes renders its selected title and rich body (or its empty state)
+        // together. Clearing Rich Edit here would load an extra blank document.
+        if page!="notes"{self.set_input("");self.set_detail("");}
+        self.dirty_note=false;
         let index=PAGES.iter().position(|p|p.0==page).unwrap();
         unsafe{SendMessageW(self.nav,LB_SETCURSEL,self.navigation.iter().position(|&p|p==page).unwrap(),0);}
         label(self.title,PAGES[index].1);
@@ -212,6 +218,14 @@ impl Ui{
         else if id>=ACTION && id<ACTION+PRIMARY as u16 {if let Some(&(key,_))=self.actions.get((id-ACTION) as usize){self.run_action(key);}}
     }
     fn configure_actions(&self){
+        // The custom pages dispatch their own menus from self.actions. Home
+        // and Notes also reuse the first native button and its accessible name.
+        if matches!(self.page,"home"|"notes"){
+            if let Some(&(_,name))=self.actions.first(){label(self.buttons[0],name);}
+            return;
+        }
+        if workspaces_page::handles(self.page)||editor_views::handles(self.page)
+            ||matches!(self.page,"widgets"|"settings"|"audio"|"camera"|"studio"|"notifications"){return;}
         for (n,h) in self.buttons.iter().enumerate(){if let Some((_,s))=self.actions.get(n){label(*h,s);}}
         unsafe{SendMessageW(self.more,CB_RESETCONTENT,0,0);for (_,s) in self.actions.iter().skip(PRIMARY){SendMessageW(self.more,CB_ADDSTRING,0,wide(s).as_ptr() as isize);}SendMessageW(self.more,CB_SETCURSEL,0,0);}
     }

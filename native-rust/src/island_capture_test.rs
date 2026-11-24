@@ -239,16 +239,48 @@ fn opening_tab_click_and_reversal_preserve_visible_targets(){
         SendMessageW(hwnd,WM_LBUTTONDOWN,1,at);
         SendMessageW(hwnd,WM_LBUTTONUP,0,0);
         assert!(NAV_PRESS.get().is_null());
-        let mut msg=MSG::default();
-        assert_eq!(PeekMessageW(&mut msg,tab,BM_CLICK,BM_CLICK,PM_REMOVE),0,"dragging off cancels the click");
+        with_ui(|ui|assert_eq!(ui.pending_page,None,"dragging off cancels the click"));
 
         SendMessageW(hwnd,WM_LBUTTONDOWN,1,at);
         SendMessageW(hwnd,WM_LBUTTONUP,0,at);
-        assert_ne!(PeekMessageW(&mut msg,tab,BM_CLICK,BM_CLICK,PM_REMOVE),0,"the visible tab receives the click during the fade");
-        DispatchMessageW(&msg);
-        with_ui(|ui|assert_eq!(ui.page,"notes"));
-        assert!(island::frame().animating,"a tab change does not snap the island to full width");
+        with_ui(|ui|{
+            assert_eq!((ui.page,ui.pending_page),("home",Some("notes")));
+            assert!(island::frame().animating,"a tab click does not interrupt the opening");
+        });
+        SendMessageW(GetDlgItem(hwnd,171),BM_CLICK,0,0);
+        with_ui(|ui|assert_eq!(ui.pending_page,Some("quick"),"the latest click wins"));
+        SendMessageW(GetDlgItem(hwnd,170),BM_CLICK,0,0);
+        with_ui(|ui|assert_eq!(ui.pending_page,None,"returning to the active page cancels the request"));
+        SendMessageW(tab,BM_CLICK,0,0);
+        with_ui(|ui|{shell::expand(ui,false);shell::expand(ui,true);});
+        SendMessageW(hwnd,shell::COMMIT_PAGE,0,0);
+        with_ui(|ui|assert_eq!((ui.page,ui.pending_page),("home",None),"a stale timer cannot resurrect a canceled navigation"));
+        SendMessageW(tab,BM_CLICK,0,0);
+        with_ui(|ui|shell::capture_transition_at(ui,Duration::from_millis(240)));
+        assert!(!island::frame().animating);
+        with_ui(|ui|assert_eq!(ui.page,"home","first present the settled surface"));
+        SendMessageW(hwnd,shell::COMMIT_PAGE,0,0);
+        with_ui(|ui|assert_eq!((ui.page,ui.pending_page),("notes",None)));
+        let assert_live=||{
+            assert!(!motion_surface::active(hwnd));
+            assert!(!motion_surface::bitmap_allocated(),"release the transient compositor bitmap");
+            assert_eq!(GetWindowLongW(hwnd,GWL_EXSTYLE) as u32 & WS_EX_LAYERED,0);
+            assert!(!workspace_masked(),"live children regain their original regions");
+        };
+        assert_live();
+        with_ui(|ui|shell::expand(ui,false));
+        with_ui(|ui|{
+            core::set(ui,"motion","on");
+            shell::motion_setting_changed(ui);
+        });
+        assert!(!island::needs_tick());
+        assert_live();
+        with_ui(|ui|shell::expand(ui,true));
+        assert!(!island::needs_tick());
+        assert_live();
         close_app(hwnd);
+        assert!(!motion_surface::active(hwnd));
+        assert!(!motion_surface::bitmap_allocated());
     });
     if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
 }
@@ -353,4 +385,69 @@ fn rich_note_uses_theme_on_first_workspace_and_widget_frame(){
         close_app(hwnd);
     });
     fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+#[ignore="real rich editor and encrypted fixture; run on a private Windows desktop"]
+fn opening_pinned_note_preserves_both_editors() {
+    let root=env::temp_dir().join(format!("Buddy-pinned-note-{}-{}",std::process::id(),core::now()));
+    let fixtures=if let Some(supplied)=env::var_os("BUDDY_ISLAND_FIXTURES"){PathBuf::from(supplied)}
+        else{seed_profiles(&root);root.clone()};
+    let source=fixtures.join("fixture-cards");
+    let profile=root.join("copy");
+    fs::create_dir_all(profile.join("images")).unwrap();
+    fs::copy(source.join("state-v1.dpapi"),profile.join("state-v1.dpapi")).unwrap();
+    for item in fs::read_dir(source.join("images")).unwrap(){
+        let item=item.unwrap();fs::copy(item.path(),profile.join("images").join(item.file_name())).unwrap();
+    }
+    workspace::with_private_test_desktop(||unsafe{
+        let h=create_app(&profile,false,&[island::Widget::Note]);
+        with_ui(|u|{
+            u.records.get_mut("notes").unwrap().push(["other","Original title","Other body","0","0","","0"].map(String::from).to_vec());
+            u.active_note=Some("other".to_owned());
+            u.navigate("notes");
+            u.search="Nothing should match this filter".into();
+            core::note_rows(u);
+            assert!(u.note_ids.is_empty());
+            u.set_input("Main draft");u.set_detail("Unsaved main body");u.dirty_note=true;
+            u.read_error=Some("Synthetic save failure".into());
+        });
+        let strip=FindWindowW(wide("BuddyRustSideWidgets").as_ptr(),null());
+        let card=FindWindowExW(strip,null_mut(),wide("BuddyRustSideCard").as_ptr(),null());
+        let click=||{
+            SendMessageW(card,WM_COMMAND,401,GetDlgItem(card,401)as _);
+            SendMessageW(h,side_widgets::MESSAGE,0,0);
+        };
+        assert!(!card.is_null());
+        SetWindowTextW(GetDlgItem(card,411),wide("Fresh widget draft").as_ptr());
+        click();
+        with_ui(|u|{
+            assert!(!u.expanded);assert!(u.dirty_note);assert_eq!(u.active_note.as_deref(),Some("other"));
+            assert!(!u.search.is_empty());assert_eq!(u.records["notes"].iter().find(|n|n[0]=="other").unwrap()[1],"Original title");
+            u.read_error=None;
+        });
+        click();
+        with_ui(|u|{
+            assert!(u.expanded);assert!(u.search.is_empty());assert_eq!(u.active_note.as_deref(),Some("example"));
+            assert_eq!(u.input(),"Fresh widget draft");
+            let (body,pictures)=u.images.contents().unwrap();
+            assert!(body.contains("After the image"));assert_eq!(pictures.len(),1);
+            shell::capture_transition_at(u,std::time::Duration::from_millis(1600));
+            assert_ne!(GetWindowLongW(u.images.editor,GWL_STYLE) as u32 & WS_VISIBLE,0);
+            let notes=&u.records["notes"];
+            let other=notes.iter().find(|r|r[0]=="other").unwrap();
+            assert_eq!((other[1].as_str(),other[2].as_str()),("Main draft","Unsaved main body"));
+            assert_eq!(notes.iter().find(|r|r[0]=="example").unwrap()[1],"Fresh widget draft");
+        });
+        let pixels=render(h,island::frame().body);
+        let image_pixels=fixture_pixels(&pixels);
+        if let Some(dir)=env::var_os("BUDDY_UI_CAPTURE_DIR"){save(&PathBuf::from(dir),"pinned-note-open",&pixels);}
+        assert!(image_pixels>200,"the reopened inline image must paint in the main workspace, found {image_pixels} fixture pixels");
+        with_ui(|u|{
+            u.records.get_mut("notes").unwrap().clear();u.active_note=None;u.navigate("notes");
+            assert!(u.note_ids.is_empty()&&u.input().is_empty()&&u.detail().is_empty());
+        });
+        close_app(h);
+    });
+    let _=fs::remove_dir_all(root);
 }

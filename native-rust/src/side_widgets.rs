@@ -867,7 +867,8 @@ fn notify(ui:&Ui,kind:Kind,msg:String){
     }}});
     ui.status(&msg);
 }
-pub fn flush(ui:&mut Ui)->Result<(),String>{
+pub fn flush(ui:&mut Ui)->Result<(),String>{flush_note(ui,true)}
+fn flush_note(ui:&mut Ui,refresh_main:bool)->Result<(),String>{
     // Read the native editors before changing mode, even when Windows deferred
     // EN_CHANGE inside a dialog or accessibility text replacement.
     let note=STRIP.with(|cell|{
@@ -889,7 +890,7 @@ pub fn flush(ui:&mut Ui)->Result<(),String>{
             return Err("The note changed elsewhere. Your widget edits are still open.".into());
         }
         core::write_note(ui,idx,draft.title.clone(),draft.body.clone(),&draft.images,draft.format.clone())?;
-        if ui.page=="notes"&&ui.active_note.as_deref()==Some(&draft.id)&&!ui.dirty_note{core::render(ui,"notes");}
+        if refresh_main&&ui.page=="notes"&&ui.active_note.as_deref()==Some(&draft.id)&&!ui.dirty_note{core::render(ui,"notes");}
         Ok(())
     };
     if let Err(e)=apply(ui){DRAFT.with(|d|*d.borrow_mut()=Some(draft));return Err(e);}Ok(())
@@ -912,7 +913,14 @@ fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
         if id==0{return Ok(String::new());}
     }
     match id {
-        401=>{open(ui,"notes");if ui.page=="notes"{ui.search.clear();ui.active_note=Some(r[0].clone());core::render(ui,"notes");}return Ok(String::new());}
+        401=>{
+            shell::expand_from_side(ui);
+            if ui.expanded{
+                ui.search.clear();ui.new_note=false;ui.active_note=Some(r[0].clone());
+                ui.navigate("notes");
+            }
+            return Ok(String::new());
+        }
         408=>{shell::copy_text(ui,&format!("{}\r\n\r\n{}",r[1],r[2]))?;return Ok("Note copied.".into());}
         406|410=>{
             let image=if id==406{Some(workspace::attach_clipboard_image(ui)?)}else{None};
@@ -960,9 +968,12 @@ fn hide_note(ui:&mut Ui,id:&str)->Result<String,String>{
     if let Err(e)=ui.save(){core::set(ui,"noteWidget",id);return Err(e);}
     Ok("Note card hidden.".into())
 }
+fn accepts(ui:&Ui,event:&Event)->bool{
+    !ui.expanded && !ui.locked && !ui.suppressed && !ui.paused && ui.hidden_until.is_none()
+        && core::setting(ui,"widgets","on")=="on" && event.identity==identity(ui,event.kind)
+}
 fn action(ui:&mut Ui,event:Event)->Result<String,String>{
-    if ui.expanded||ui.locked||ui.suppressed||ui.paused||ui.hidden_until.is_some(){return Ok(String::new());}
-    if core::setting(ui,"widgets","on")!="on"||event.identity!=identity(ui,event.kind){return Ok(String::new());}
+    if !accepts(ui,&event){return Ok(String::new());}
     match event.id{
         110|111=>{
             if ui.call_state.is_none(){return Err("No calling app is connected.".into());}
@@ -1001,7 +1012,14 @@ fn action(ui:&mut Ui,event:Event)->Result<String,String>{
 }
 pub fn command(ui:&mut Ui,_wp:usize){
     let events=EVENTS.with(|e|std::mem::take(&mut *e.borrow_mut()));
-    if let Err(e)=flush(ui){notify(ui,Kind::Note,e);return;}
+    let opening_note=events.iter().any(|e|e.kind==Kind::Note && e.id==401 && accepts(ui,e));
+    // Save the main editor under its original ID before committing the side
+    // draft. Its conflict check can then protect simultaneous edits to one note.
+    if opening_note && ui.page=="notes" && ui.dirty_note{
+        if let Err(e)=core::save_note(ui){notify(ui,Kind::Note,e);return;}
+    }
+    // The open command loads the freshly committed widget note exactly once.
+    if let Err(e)=flush_note(ui,!opening_note){notify(ui,Kind::Note,e);return;}
     for event in events{let k=event.kind;match action(ui,event){Ok(s)|Err(s)=>notify(ui,k,s)}}
     sync(ui);
 }
