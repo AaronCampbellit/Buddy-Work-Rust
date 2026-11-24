@@ -13,15 +13,15 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 **Quick Access** keeps apps, websites, files, and folders on one shelf. **Clipboard** keeps a searchable history of text, links, and images. Open any screenshot at full size.
 
 <p>
-  <a href="docs/screenshots/quick-shelf.png?raw=true"><img src="docs/screenshots/quick-shelf.png" width="390" alt="Quick Access with a route brief, trail sign, reference folder, three websites and Notepad"></a>
-  <a href="docs/screenshots/clipboard-overflow.png?raw=true"><img src="docs/screenshots/clipboard-overflow.png" width="390" alt="Clipboard in dark mode with an image, a map link and a scrollable grid of field notes"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/quick-shelf.png"><img src="docs/screenshots/quick-shelf.png" width="390" alt="Quick Access with a route brief, trail sign, reference folder, three websites and Notepad"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/clipboard-overflow.png"><img src="docs/screenshots/clipboard-overflow.png" width="390" alt="Clipboard in dark mode with an image, a map link and a scrollable grid of field notes"></a>
 </p>
 
 **Home** shows a selected note alongside playback controls for the current track. **Notes** opens the full editor with formatted text, inline images, links, and a reminder field.
 
 <p>
-  <a href="docs/screenshots/home-playing.png?raw=true"><img src="docs/screenshots/home-playing.png" width="390" alt="Home with a coastal trail guide and the Harbor Loop track playing"></a>
-  <a href="docs/screenshots/rich-note.png?raw=true"><img src="docs/screenshots/rich-note.png" width="390" alt="Notes showing the editable Coastal trail guide with an inline map palette and link"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/home-playing.png"><img src="docs/screenshots/home-playing.png" width="390" alt="Home with a coastal trail guide and the Harbor Loop track playing"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/rich-note.png"><img src="docs/screenshots/rich-note.png" width="390" alt="Notes showing the editable Coastal trail guide with an inline map palette and link"></a>
 </p>
 
 ## Features
@@ -42,8 +42,8 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 Filter the shelf to **Files** to see linked originals and saved copies. **Downloads** shows recent files with their sizes and actions to open them or reveal them in Explorer.
 
 <p>
-  <a href="docs/screenshots/file-shelf.png?raw=true"><img src="docs/screenshots/file-shelf.png" width="390" alt="The Files filter on the shelf, showing a linked route brief and a saved copy of a trail sign"></a>
-  <a href="docs/screenshots/downloads.png?raw=true"><img src="docs/screenshots/downloads.png" width="390" alt="Downloads history for the trail sign and route brief, with actions on each file"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/file-shelf.png"><img src="docs/screenshots/file-shelf.png" width="390" alt="The Files filter on the shelf, showing a linked route brief and a saved copy of a trail sign"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/downloads.png"><img src="docs/screenshots/downloads.png" width="390" alt="Downloads history for the trail sign and route brief, with actions on each file"></a>
 </p>
 
 ## Image markup, OCR and Rewrite
@@ -51,15 +51,15 @@ Filter the shelf to **Files** to see linked originals and saved copies. **Downlo
 Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or export it. Here a blue rectangle marks the meeting details on a trail sign.
 
 <p>
-  <a href="docs/screenshots/markup-library.png?raw=true"><img src="docs/screenshots/markup-library.png" width="390" alt="Image markup with the clipboard image selected and controls to choose an image, open the editor or save a PNG"></a>
-  <a href="docs/screenshots/markup-annotated.png?raw=true"><img src="docs/screenshots/markup-annotated.png" width="390" alt="Image editor with the rectangle tool selected and the meeting details outlined in blue"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/markup-library.png"><img src="docs/screenshots/markup-library.png" width="390" alt="Image markup with the clipboard image selected and controls to choose an image, open the editor or save a PNG"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/markup-annotated.png"><img src="docs/screenshots/markup-annotated.png" width="390" alt="Image editor with the rectangle tool selected and the meeting details outlined in blue"></a>
 </p>
 
 **Read image text** recognizes words locally and lets you copy the result. **AI Rewrite** lets you choose a tone and review the source before sending it through your separately installed Codex CLI.
 
 <p>
-  <a href="docs/screenshots/ocr.png?raw=true"><img src="docs/screenshots/ocr.png" width="390" alt="Local OCR showing the detected words and the full text from the Harbor Loop trail sign"></a>
-  <a href="docs/screenshots/rewrite.png?raw=true"><img src="docs/screenshots/rewrite.png" width="390" alt="AI Rewrite showing a draft request to review trail signs, the Clearer tone, and an empty result pane"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/ocr.png"><img src="docs/screenshots/ocr.png" width="390" alt="Local OCR showing the detected words and the full text from the Harbor Loop trail sign"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/rewrite.png"><img src="docs/screenshots/rewrite.png" width="390" alt="AI Rewrite showing a draft request to review trail signs, the Clearer tone, and an empty result pane"></a>
 </p>
 
 ## Notes and side widgets
@@ -67,7 +67,7 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 **Widgets** holds the Pomodoro timer, stopwatch, laps, and side-widget pickers. A pinned note stays editable beside the compact island. A pinned clipboard image keeps its preview and actions within reach.
 
 <p>
-  <a href="docs/screenshots/timers.png?raw=true"><img src="docs/screenshots/timers.png" width="840" alt="Widgets showing a focus countdown, completed sessions, a stopwatch and lap times"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/timers.png"><img src="docs/screenshots/timers.png" width="840" alt="Widgets showing a focus countdown, completed sessions, a stopwatch and lap times"></a>
 </p>
 
 ### Pin a note
@@ -77,8 +77,8 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 3. Edit the title or body directly in the widget. Press **Ctrl+V** or right-click and choose **Paste** to insert an image at the cursor. The widget saves as you edit. Choose **Open note in Buddy** to continue in the main editor.
 
 <p>
-  <a href="docs/screenshots/rich-pinned-note.png?raw=true"><img src="docs/screenshots/rich-pinned-note.png" width="390" alt="Editable pinned note in dark mode with readable body text, a colored inline image, a map link, and a reminder field"></a>
-  <a href="docs/screenshots/pinned-clipboard.png?raw=true"><img src="docs/screenshots/pinned-clipboard.png" width="390" alt="Pinned clipboard widget showing the map palette and clipboard actions"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/rich-pinned-note.png"><img src="docs/screenshots/rich-pinned-note.png" width="390" alt="Editable pinned note in dark mode with readable body text, a colored inline image, a map link, and a reminder field"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/pinned-clipboard.png"><img src="docs/screenshots/pinned-clipboard.png" width="390" alt="Pinned clipboard widget showing the map palette and clipboard actions"></a>
 </p>
 
 ## Media and notifications
@@ -86,8 +86,8 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 **Media** shows the current Windows media session with playback and seek controls. The **notification center** collects recent notifications when Windows access is enabled. The capture shows the empty inbox.
 
 <p>
-  <a href="docs/screenshots/media-playing.png?raw=true"><img src="docs/screenshots/media-playing.png" width="390" alt="Media showing Harbor Loop by Field Recordings with playback position and transport controls"></a>
-  <a href="docs/screenshots/recent-notifications.png?raw=true"><img src="docs/screenshots/recent-notifications.png" width="390" alt="Recent notifications page with an empty inbox"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/media-playing.png"><img src="docs/screenshots/media-playing.png" width="390" alt="Media showing Harbor Loop by Field Recordings with playback position and transport controls"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/recent-notifications.png"><img src="docs/screenshots/recent-notifications.png" width="390" alt="Recent notifications page with an empty inbox"></a>
 </p>
 
 ## Audio and camera
@@ -95,15 +95,15 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 Switch between **Input** and **Output** to manage microphones and playback devices. The Windows test VM had no connected audio endpoints.
 
 <p>
-  <a href="docs/screenshots/devices.png?raw=true"><img src="docs/screenshots/devices.png" width="390" alt="Devices with the Input tab selected and no connected microphones"></a>
-  <a href="docs/screenshots/audio-output.png?raw=true"><img src="docs/screenshots/audio-output.png" width="390" alt="Devices with the Output tab selected and no connected playback devices"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" width="390" alt="Devices with the Input tab selected and no connected microphones"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/audio-output.png"><img src="docs/screenshots/audio-output.png" width="390" alt="Devices with the Output tab selected and no connected playback devices"></a>
 </p>
 
 The physical **Camera** page separates framing from picture adjustments. These screenshots show both control panels with the preview off.
 
 <p>
-  <a href="docs/screenshots/camera.png?raw=true"><img src="docs/screenshots/camera.png" width="390" alt="Camera Framing tab with preview selection and pan, tilt and zoom controls"></a>
-  <a href="docs/screenshots/camera-picture.png?raw=true"><img src="docs/screenshots/camera-picture.png" width="390" alt="Camera Picture tab for a connected camera’s image adjustments"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/camera.png"><img src="docs/screenshots/camera.png" width="390" alt="Camera Framing tab with preview selection and pan, tilt and zoom controls"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/camera-picture.png"><img src="docs/screenshots/camera-picture.png" width="390" alt="Camera Picture tab for a connected camera’s image adjustments"></a>
 </p>
 
 ### Virtual camera studio
@@ -111,12 +111,12 @@ The physical **Camera** page separates framing from picture adjustments. These s
 Choose a **Background**, add a **Name & logo**, or configure **Picture-in-picture**. The **Standby**, **Saved scenes**, and **Camera & output** tabs handle what viewers see between calls and which source supplies the video.
 
 <p>
-  <a href="docs/screenshots/studio.png?raw=true"><img src="docs/screenshots/studio.png" width="390" alt="Virtual camera Background tab with background options and Add image"></a>
-  <a href="docs/screenshots/studio-name.png?raw=true"><img src="docs/screenshots/studio-name.png" width="390" alt="Name and logo tab with the logo corner setting and an option to add an image"></a>
-  <a href="docs/screenshots/studio-pip.png?raw=true"><img src="docs/screenshots/studio-pip.png" width="390" alt="Picture-in-picture tab with the inset corner setting"></a>
-  <a href="docs/screenshots/studio-standby.png?raw=true"><img src="docs/screenshots/studio-standby.png" width="390" alt="Standby tab with color and image controls"></a>
-  <a href="docs/screenshots/studio-scenes.png?raw=true"><img src="docs/screenshots/studio-scenes.png" width="390" alt="Saved scenes tab with its scene selector"></a>
-  <a href="docs/screenshots/studio-output.png?raw=true"><img src="docs/screenshots/studio-output.png" width="390" alt="Camera and output tab with camera and input format selectors"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio.png"><img src="docs/screenshots/studio.png" width="390" alt="Virtual camera Background tab with background options and Add image"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio-name.png"><img src="docs/screenshots/studio-name.png" width="390" alt="Name and logo tab with the logo corner setting and an option to add an image"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio-pip.png"><img src="docs/screenshots/studio-pip.png" width="390" alt="Picture-in-picture tab with the inset corner setting"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio-standby.png"><img src="docs/screenshots/studio-standby.png" width="390" alt="Standby tab with color and image controls"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio-scenes.png"><img src="docs/screenshots/studio-scenes.png" width="390" alt="Saved scenes tab with its scene selector"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/studio-output.png"><img src="docs/screenshots/studio-output.png" width="390" alt="Camera and output tab with camera and input format selectors"></a>
 </p>
 
 ## Settings and diagnostics
@@ -124,28 +124,28 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 **General** includes launch at login, performance capture, and update checks. **Appearance** lets you set custom colors, order the tabs, and adjust scale and motion.
 
 <p>
-  <a href="docs/screenshots/settings.png?raw=true"><img src="docs/screenshots/settings.png" width="390" alt="General settings with launch-at-login and performance diagnostics"></a>
-  <a href="docs/screenshots/appearance.png?raw=true"><img src="docs/screenshots/appearance.png" width="390" alt="Appearance settings with custom color swatches for the accent, background, fields and text"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/settings.png"><img src="docs/screenshots/settings.png" width="390" alt="General settings with launch-at-login and performance diagnostics"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/appearance.png"><img src="docs/screenshots/appearance.png" width="390" alt="Appearance settings with custom color swatches for the accent, background, fields and text"></a>
 </p>
 
 **Island** sets the monitor, opening mode, and placement. **Notifications** controls preview privacy, grouping, and duration.
 
 <p>
-  <a href="docs/screenshots/settings-island.png?raw=true"><img src="docs/screenshots/settings-island.png" width="390" alt="Island settings with display, top-left placement and click-to-open mode"></a>
-  <a href="docs/screenshots/settings-notifications.png?raw=true"><img src="docs/screenshots/settings-notifications.png" width="390" alt="Notification preferences with preview, privacy, grouping and duration controls"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/settings-island.png"><img src="docs/screenshots/settings-island.png" width="390" alt="Island settings with display, top-left placement and click-to-open mode"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/settings-notifications.png"><img src="docs/screenshots/settings-notifications.png" width="390" alt="Notification preferences with preview, privacy, grouping and duration controls"></a>
 </p>
 
 **AI Rewrite** manages CLI sign-in and rewrite preferences. **Saved files** opens the shelf or changes where Buddy stores its copies.
 
 <p>
-  <a href="docs/screenshots/settings-rewrite.png?raw=true"><img src="docs/screenshots/settings-rewrite.png" width="390" alt="AI Rewrite settings with CLI sign-in and connection status"></a>
-  <a href="docs/screenshots/settings-files.png?raw=true"><img src="docs/screenshots/settings-files.png" width="390" alt="Saved files settings with shortcuts for the storage folder and file shelf"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/settings-rewrite.png"><img src="docs/screenshots/settings-rewrite.png" width="390" alt="AI Rewrite settings with CLI sign-in and connection status"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/settings-files.png"><img src="docs/screenshots/settings-files.png" width="390" alt="Saved files settings with shortcuts for the storage folder and file shelf"></a>
 </p>
 
 **Updates and diagnostics** can record 15 seconds of local CPU, memory, and handle counts, open the report folder, or check a configured update feed.
 
 <p>
-  <a href="docs/screenshots/diagnostics.png?raw=true"><img src="docs/screenshots/diagnostics.png" width="390" alt="Updates and diagnostics with buttons to capture a report, open reports, check for updates and open a release"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/buddy-work-windows/main/docs/screenshots/diagnostics.png"><img src="docs/screenshots/diagnostics.png" width="390" alt="Updates and diagnostics with buttons to capture a report, open reports, check for updates and open a release"></a>
 </p>
 
 ## Island motion
