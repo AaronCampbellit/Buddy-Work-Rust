@@ -1,6 +1,6 @@
 use super::*;
 use chrome::{fill,icon,inset,mix,panel,rect,text,Icon};
-use windows_sys::Win32::{Foundation::RECT,UI::Controls::{DRAWITEMSTRUCT,ODT_BUTTON,ODT_LISTBOX,ODS_FOCUS,ODS_NOFOCUSRECT,ODS_SELECTED}};
+use windows_sys::Win32::{Foundation::{POINT,RECT},UI::Controls::{DRAWITEMSTRUCT,ODT_BUTTON,ODT_LISTBOX,ODS_FOCUS,ODS_NOFOCUSRECT,ODS_SELECTED}};
 
 pub(super) const TAB:u16=170;
 pub(super) const HEAD:u16=180;
@@ -57,8 +57,18 @@ impl Ui {
             self.search=window_text(self.search_box,32768);core::note_rows(self);self.redraw();return true
         }
         if code!=BN_CLICKED as u16{return false}
-        if let Some(tab)=id.checked_sub(TAB).and_then(|i|TABS.get(i as usize)){self.navigate(tab.0);return true}
-        if let Some(action)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){if action.0=="notifications"{notification_popup::toggle(self)}else{self.navigate(action.0)}return true}
+        if let Some(tab)=id.checked_sub(TAB).and_then(|i|TABS.get(i as usize)){
+            if self.page!=tab.0{self.navigate(tab.0);}
+            return true
+        }
+        if let Some(action)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){
+            if action.0=="notifications"{notification_popup::toggle(self)}
+            else{
+                if !self.expanded{crate::shell::expand(self,true);}
+                if self.page!=action.0{self.navigate(action.0);}
+            }
+            return true
+        }
         match id{
             COLLAPSE=>crate::shell::expand(self,false),
             MORE_GO=>self.more_menu(),
@@ -86,6 +96,21 @@ impl Ui {
         if body.right>body.left && body.bottom>body.top{return body}
         let mut r=RECT::default();unsafe{GetClientRect(self.hwnd.0,&mut r);}r
     }
+    pub(crate) fn visible_navigation_at(&self,x:i32,y:i32)->Option<Handle>{
+        let frame=crate::island::frame();
+        if !self.expanded || frame.body_alpha<=0.0 || !crate::island::contains(&frame,x,y){return None}
+        let viewport=frame.visible_workspace(self.scale());
+        if x<viewport.left || x>=viewport.right || y<viewport.top || y>=viewport.bottom{return None}
+        let mut point=POINT{x:x-frame.workspace_offset(),y};
+        unsafe{
+            ClientToScreen(self.hwnd.0,&mut point);
+            self.tabs.iter().chain([&self.collapse]).copied().find(|&child|{
+                let mut r=RECT::default();
+                GetWindowLongW(child,GWL_STYLE) as u32&WS_VISIBLE!=0 && GetWindowRect(child,&mut r)!=0
+                    && point.x>=r.left && point.x<r.right && point.y>=r.top && point.y<r.bottom
+            })
+        }
+    }
     pub(crate) fn layout_motion_header(&self){
         let frame=crate::island::frame();
         let body=self.body();let p=|n|self.px(n);
@@ -97,12 +122,16 @@ impl Ui {
         };
         place(self.compact,!open,0,0,surface_w,surface_h);
         place(self.compact_tools,!open,surface_w-p(45),p(3),p(29),(surface_h-p(7)).min(p(34)));
-        let progress=frame.header_progress.clamp(0.,1.);
-        let header_pad=p(18+(12.0*progress).round() as i32);
-        for (i,tool)in self.header.iter().enumerate(){
-            let on=self.expanded || (frame.animating && i==0);
-            let offset=if self.expanded{p(37)*(3-i as i32)}else{0};
-            place(*tool,on,surface_w-header_pad-p(30)-offset,p(5+(3.0*progress).round() as i32),p(30),p(30));
+        // Keep the notification bell anchored between its actual compact and
+        // expanded slots. The remaining tools enter from the right as space opens.
+        let progress=frame.progress.clamp(0.,1.);
+        let end_inset=p(60)+3*p(37);
+        let inset=p(45)+((end_inset-p(45)) as f32*progress).round() as i32;
+        let header_y=p(3)+(5.0*self.scale()*frame.header_progress).round() as i32;
+        for (i,tool) in self.header.iter().enumerate(){
+            let x=surface_w-inset+i as i32*p(37);
+            let on=open && (i==0 || x+p(30)<=surface_w-p(4));
+            place(*tool,on,x,header_y,p(30),p(30));
         }
     }
     pub(crate) fn layout(&self){
@@ -152,10 +181,10 @@ impl Ui {
             show(self.search_box,false);
             let list_w=inner*41/100;
             if utility{unsafe{SendMessageW(self.list,LB_SETITEMHEIGHT,0,p(28) as _);}}
-            place(self.list,utility,left,top+p(29),list_w,main_h-p(65));
+            place(self.list,utility,left,top+p(29),list_w,main_h-p(86));
             let ux=left+list_w+p(12);let uw=inner-list_w-p(12);
             textbox(self.input_box,utility,ux,top+p(22),uw,p(26));
-            let dy=top+p(71);let dh=main_h-p(108);
+            let dy=top+p(71);let dh=main_h-p(129);
             let has_images=self.images.layout(self.page,utility,(content.left+ux,content.top+dy,uw,dh),self.zoom,self.appearance);
             textbox(self.detail_box,utility && !has_images,ux,dy,uw,dh);
         }
@@ -169,7 +198,8 @@ impl Ui {
         self.layout_preferences(open && self.page=="settings",widget_bounds);
         self.layout_device_view(open && matches!(self.page,"audio"|"camera"|"studio"|"notifications"),widget_bounds);
         let issue=self.read_error.is_some() || unsafe{!GetPropW(self.notice,wide("BuddyIssue").as_ptr()).is_null()};
-        place(self.notice,open&&issue,left,bottom-p(18),inner-p(45),p(16));
+        let notice_y = if utility { bottom-p(51) } else { bottom-p(18) };
+        place(self.notice,utility || (open && issue),left,notice_y,inner-p(12),p(17));
         if !frame.animating {
             let mut focus_order=Vec::new();
             if open {
@@ -220,7 +250,8 @@ impl Ui {
         let rad=p((20.0+6.0*progress) as i32);
         panel(dc,rect(r.left,r.top-rad,w,h+rad),rad,bg,edge);
         if !self.expanded && !frame.animating{return}
-        panel(dc,box_at((w-p(44))/2,h-p(8),p(44),p(3)),p(2),mix(bg,muted,150),mix(bg,muted,150));
+        let grip=mix(bg,muted,(150.0*frame.body_alpha).round() as u32);
+        if frame.body_alpha>0.0{panel(dc,box_at((w-p(44))/2,h-p(8),p(44),p(3)),p(2),grip,grip);}
         let clock=crate::shell::clock(core::setting(self,"center","time"),core::setting(self,"custom","Buddy"));
         let mut center=clock;let mut left_status=None;
         for (run,label,timer) in [("pomEnd","Pomodoro",core::timers(self).0),("watchStart","Stopwatch",core::timers(self).1)]{

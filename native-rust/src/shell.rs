@@ -229,7 +229,11 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
         if !ui.isolated && !ui.paused && ui.page=="home"{let _=crate::workspace::open_fresh(ui);}
     }
     island::request(open,reduce_motion(ui));
-    if frame.expanded!=open || frame.animating{render_frame(ui,true);}
+    if frame.expanded!=open || frame.animating {
+        // The live workspace already occupies its expanded bounds on both legs
+        // of a reversal. Keep its snapshot and move only the persistent header.
+        render_frame(ui,!frame.animating || !island::frame().animating);
+    }
     unsafe{
         if open{SetTimer(ui.hwnd.0,2,50,None);}else{KillTimer(ui.hwnd.0,2);}
         // Starting the clock before staging the controls can skip the first
@@ -487,6 +491,7 @@ pub fn prompt(ui:&Ui,title:&str,caption:&str,initial:&str)->Option<String>{
 pub fn choice(ui:&Ui,title:&str,caption:&str,items:&[String])->Option<usize>{
     dialog(ui,title,caption,|owner|unsafe{
         let choices=CreateWindowExW(0,wide("COMBOBOX").as_ptr(),null(),WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST as u32,12,36,348,200,owner,10usize as _,null_mut(),null());
+        crate::chrome::scroll::attach(choices,WS_VSCROLL,true);
         for item in items{SendMessageW(choices,CB_ADDSTRING,0,wide(item).as_ptr() as isize);}
         SendMessageW(choices,CB_SETCURSEL,0,0);choices
     },|choices|{

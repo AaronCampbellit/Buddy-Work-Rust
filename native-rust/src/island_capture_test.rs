@@ -206,3 +206,49 @@ fn note_image_fades_with_the_workspace_during_island_motion(){
     });
     if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
 }
+
+#[path="ui/scroll_tests.rs"]
+mod scroll_tests;
+
+#[test]
+#[ignore="live Win32 animation and focus on a private desktop"]
+fn opening_tab_click_and_reversal_preserve_visible_targets(){
+    use std::time::Duration;
+    let supplied=env::var_os("BUDDY_ISLAND_FIXTURES").map(PathBuf::from);
+    let fixtures=supplied.clone().unwrap_or_else(||env::temp_dir().join(format!("Buddy-animation-input-{}-{}",std::process::id(),core::now())));
+    if supplied.is_none(){seed_profiles(&fixtures);}
+    workspace::with_private_test_desktop(||unsafe{
+        let hwnd=create_app(&fixtures.join("fixture-empty"),false,&[]);
+        let left=|id|{
+            let mut rect=RECT::default();GetWindowRect(GetDlgItem(hwnd,id),&mut rect);rect.left
+        };
+        let compact_bell=left(ui::COMPACT_TOOLS as i32);
+        with_ui(|u|shell::expand(u,true));
+        assert_eq!(left(180),compact_bell,"the first opening frame keeps the bell in place");
+        with_ui(|u|shell::capture_transition_at(u,Duration::from_millis(95)));
+        let bell=left(180);
+        with_ui(|u|shell::expand(u,false));
+        assert_eq!(left(180),bell,"reversing from opening preserves the displayed bell position");
+        with_ui(|u|shell::expand(u,true));
+        assert_eq!(left(180),bell,"reversing from closing preserves the displayed bell position");
+
+        let tab=GetDlgItem(hwnd,173);let mut rc=RECT::default();GetWindowRect(tab,&mut rc);
+        let mut point=POINT{x:(rc.left+rc.right)/2,y:(rc.top+rc.bottom)/2};
+        ScreenToClient(hwnd,&mut point);point.x+=island::frame().workspace_offset();
+        let at=((point.y as u16 as usize)<<16 | point.x as u16 as usize) as isize;
+        SendMessageW(hwnd,WM_LBUTTONDOWN,1,at);
+        SendMessageW(hwnd,WM_LBUTTONUP,0,0);
+        assert!(NAV_PRESS.get().is_null());
+        let mut msg=MSG::default();
+        assert_eq!(PeekMessageW(&mut msg,tab,BM_CLICK,BM_CLICK,PM_REMOVE),0,"dragging off cancels the click");
+
+        SendMessageW(hwnd,WM_LBUTTONDOWN,1,at);
+        SendMessageW(hwnd,WM_LBUTTONUP,0,at);
+        assert_ne!(PeekMessageW(&mut msg,tab,BM_CLICK,BM_CLICK,PM_REMOVE),0,"the visible tab receives the click during the fade");
+        DispatchMessageW(&msg);
+        with_ui(|ui|assert_eq!(ui.page,"notes"));
+        assert!(island::frame().animating,"a tab change does not snap the island to full width");
+        close_app(hwnd);
+    });
+    if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
+}

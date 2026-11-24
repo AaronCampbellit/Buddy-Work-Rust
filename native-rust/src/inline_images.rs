@@ -236,6 +236,7 @@ impl Controls{
             let preview=CreateWindowExW(0,wide("BUTTON").as_ptr(),wide("Open clipboard image in markup").as_ptr(),
                 WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON as u32,0,0,1,1,parent,PREVIEW as usize as _,null_mut(),null());
             if editor.is_null()||preview.is_null(){return Err("Windows could not create image controls.".into());}
+            crate::chrome::scroll::attach(editor,WS_VSCROLL,false);
             SendMessageW(editor,WM_USER_+53,0,MAX_TEXT as _); // EM_EXLIMITTEXT
             SendMessageW(editor,EM_AUTOURLDETECT,AURL_ENABLEURL as _,wide("http:https:").as_ptr() as _);
             SendMessageW(editor,EM_SETEVENTMASK,0,(ENM_CHANGE|ENM_UPDATE|ENM_LINK)as _);

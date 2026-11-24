@@ -141,7 +141,7 @@ impl Thumbnail {
     }
 }
 struct Card {kind:Kind, handle:HWND,rich:Option<Controls>, controls:Vec<(Spec,HWND)>, data:Content, image:Option<Thumbnail>, unscrolled:Bounds, area:Bounds, scroll_y:i32,watch_sample:Option<(std::time::Instant,u64)>}
-struct Strip {handle:HWND,parent:HWND,cards:Vec<Card>, viewport:Bounds, offset:i32, scale:f32, palette:(u32,u32,u32,u32),
+struct Strip {wheel_y:crate::ui::WheelMotion,wheel_x:crate::ui::WheelMotion,handle:HWND,parent:HWND,cards:Vec<Card>, viewport:Bounds, offset:i32, scale:f32, palette:(u32,u32,u32,u32),
     fonts:[HFONT;8], previous:HWND,next:HWND, shown:bool, opacity:u8, nav_bounds:[Bounds;2], notice:Option<(Kind,String,std::time::Instant)>}
 struct Draft {id:String,previous_title:String,previous_body:String,previous_images:Vec<Placement>,previous_format:Option<String>,title:String,body:String,images:Vec<Placement>,format:Option<String>}
 struct Event {id:u16,kind:Kind,identity:String}
@@ -161,7 +161,8 @@ unsafe fn classes()->bool {
     }true
 }
 unsafe fn child(parent:HWND,class:&str,label:&str,id:u16,styles:u32,ex:u32)->HWND{
-    CreateWindowExW(ex,wide(class).as_ptr(),wide(label).as_ptr(),WS_CHILD|styles,0,0,1,1,parent,id as usize as _,GetModuleHandleW(null()),null())
+    let h=CreateWindowExW(ex,wide(class).as_ptr(),wide(label).as_ptr(),WS_CHILD|styles,0,0,1,1,parent,id as usize as _,GetModuleHandleW(null()),null());
+    crate::chrome::scroll::attach(h,styles,false);h
 }
 fn font(size:i32,weight:i32)->HFONT{
     let mut l=LOGFONTW::default();l.lfHeight= -size;l.lfWeight=weight;let name=wide("Segoe UI");l.lfFaceName[..name.len()].copy_from_slice(&name);unsafe{CreateFontIndirectW(&l)}
@@ -182,7 +183,7 @@ impl Strip{
         if h.is_null(){return None;}
         let arrow=|id,label|child(h,"BUTTON",label,id,WS_TABSTOP|BS_OWNERDRAW as u32,0);
         let prev=arrow(PREVIOUS,"Previous widgets");let next=arrow(NEXT,"Next widgets");
-        Some(Self{handle:h,parent:owner,previous:prev,next,cards:vec![],viewport:Bounds::default(),offset:0,scale:0.0,
+        Some(Self{wheel_y:Default::default(),wheel_x:Default::default(),handle:h,parent:owner,previous:prev,next,cards:vec![],viewport:Bounds::default(),offset:0,scale:0.0,
             palette:(0,0,0,0),fonts:[null_mut();8],shown:false,opacity:255,nav_bounds:[Bounds::default();2],notice:None})
     }
     unsafe fn set_opacity(&mut self,alpha:u8){
@@ -766,19 +767,55 @@ unsafe extern "system" fn procedure(h:HWND,msg:u32,wp:usize,lp:isize)->isize{
     }
 }
 unsafe fn wheel(handle:HWND,msg:u32,delta:i16,keys:usize){
+    if delta==0 || keys&8!=0{return}
     STRIP.with(|slot|{let Ok(mut b)=slot.try_borrow_mut()else{return};let Some(s)=b.as_mut()else{return};
-        let direction=if delta>0{-1}else{1};
-        if msg!=WM_MOUSEHWHEEL&&keys&4==0{
+        let line=map_dip(18,s.scale);
+        if msg==WM_MOUSEWHEEL&&keys&4==0{
             if let Some(c)=s.cards.iter_mut().find(|c|c.handle==handle||IsChild(c.handle,handle)!=0){
-                let height=map_dip(if c.kind==Kind::Camera{40}else{400},s.scale);
-                if height>c.area.h{c.scroll_y=(c.scroll_y+direction*map_dip(38,s.scale)).clamp(0,height-c.area.h);s.layout();return;}
+                let limit=(map_dip(if c.kind==Kind::Camera{40}else{400},s.scale)-c.area.h).max(0);
+                if (delta<0&&c.scroll_y<limit)||(delta>0&&c.scroll_y>0){
+                    let dy=s.wheel_y.distance(delta,line,c.area.h);
+                    if dy!=0{c.scroll_y=(c.scroll_y+dy).clamp(0,limit);s.layout();}return
+                }
             }
         }
-        if msg==WM_MOUSEHWHEEL{s.horizontal(-direction);}else{s.horizontal(direction);}
+        let dx=if msg==WM_MOUSEHWHEEL{s.wheel_x.distance_horizontal(delta,map_dip(10,s.scale),s.viewport.w)}
+            else{s.wheel_x.distance(delta,line,s.viewport.w)};
+        let next=(s.offset+dx).clamp(0,s.max_offset());if next!=s.offset{s.offset=next;s.layout();}
     });
 }
 
+// Standard controls can receive the wheel because they have focus. In the strip the
+// pointer picks the card, and a RichEdit scrolls first until it reaches its end.
+unsafe fn wheel_message(msg:&MSG)->bool{
+    if !matches!(msg.message,WM_MOUSEWHEEL|WM_MOUSEHWHEEL)||msg.wParam&8!=0{return false}
+    let delta=(msg.wParam>>16)as i16;
+    let target=STRIP.with(|slot|{
+        let b=slot.try_borrow().ok()?;let s=b.as_ref().filter(|s|s.shown)?;
+        if msg.hwnd!=s.handle&&IsChild(s.handle,msg.hwnd)==0{return None}
+        let mut point=POINT{x:msg.lParam as i16 as i32,y:(msg.lParam>>16)as i16 as i32};ScreenToClient(s.handle,&mut point);
+        let card=s.cards.iter().find(|c|c.area.contains(point.x,point.y))?;
+        if msg.message==WM_MOUSEWHEEL&&msg.wParam&4==0{
+            if let Some(editor)=card.rich.as_ref().map(|r|r.editor){
+                let mut here=point;MapWindowPoints(s.handle,editor,&mut here,1);let mut client=RECT::default();GetClientRect(editor,&mut client);
+                if here.x>=0&&here.y>=0&&here.x<client.right&&here.y<client.bottom{
+                    let mut info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>()as _,fMask:SIF_RANGE|SIF_PAGE|SIF_POS,..Default::default()};
+                    if GetScrollInfo(editor,SB_VERT,&mut info)!=0&&((delta>0&&info.nPos>info.nMin)||(delta<0&&info.nPos<(info.nMax-(info.nPage as i32-1).max(0)))){return Some((editor,true))}
+                }
+            }
+        }
+        Some((card.handle,false))
+    });
+    match target{
+        Some((edit,true)) if msg.hwnd==edit=>false,
+        Some((edit,true))=>{SendMessageW(edit,msg.message,msg.wParam,msg.lParam);true}
+        Some((card,false))=>{wheel(card,msg.message,delta,msg.wParam);true}
+        None=>false,
+    }
+}
+
 pub fn dialog(msg:&MSG)->bool{unsafe{
+    if wheel_message(msg){return true}
     STRIP.with(|slot|{
         let Ok(mut b)=slot.try_borrow_mut()else{return false};let Some(s)=b.as_mut().filter(|s|s.shown)else{return false};
         let inside=msg.hwnd==s.handle||IsChild(s.handle,msg.hwnd)!=0;
@@ -1111,6 +1148,16 @@ mod tests {
             let stale=Event{id:505,kind:Kind::Clip,identity:"text:previous".into()};action(&mut ui,stale).unwrap();assert_eq!(get(clip_row(&ui).unwrap(),3),"1");
             island::configure(fixture(1100,144),false);sync(&mut ui);
             STRIP.with(|slot|{let s=slot.borrow();let s=s.as_ref().unwrap();assert_eq!(s.scale,1.5);assert!(s.offset<=s.max_offset());});
+            // On a short display the card scrolls vertically first. At its lower edge
+            // the same gesture continues into the rest of the horizontal strip.
+            let layout=Layout::new(RECT{left:0,top:0,right:1100,bottom:330},144,100,Placement::Left,300,
+                &[Widget::Camera,Widget::Focus,Widget::Stopwatch,Widget::Note,Widget::Clipboard]);
+            island::configure(layout,false);sync(&mut ui);
+            let target=STRIP.with(|slot|{let mut b=slot.borrow_mut();let s=b.as_mut().unwrap();let target=s.cards.iter_mut().find(|c|c.kind==Kind::Focus).unwrap();target.scroll_y=0;s.offset=120;s.layout();s.cards.iter().find(|c|c.kind==Kind::Focus).unwrap().handle});
+            let offsets=||STRIP.with(|slot|{let b=slot.borrow();let s=b.as_ref().unwrap();(s.cards.iter().find(|c|c.handle==target).unwrap().scroll_y,s.offset)});
+            let initial=offsets();wheel(target,WM_MOUSEWHEEL,-120,0);let first=offsets();assert!(first.0>initial.0 && first.1==initial.1);
+            for _ in 0..12{wheel(target,WM_MOUSEWHEEL,-120,0);}let end=offsets();assert!(end.1>first.1,"wheel at the bottom of a clipped card reaches the next widget");
+            let before=end.1;wheel(target,WM_MOUSEHWHEEL,30,0);let after=offsets().1;assert!(after>before&&after-before<100,"fractional wheel must not page a whole card");
             ui.locked=true;sync(&mut ui);assert_eq!(IsWindowVisible(strip),0);
             close();drop(ui);DestroyWindow(h);std::fs::remove_dir_all(folder).unwrap();
         });

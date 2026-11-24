@@ -72,16 +72,17 @@ pub fn render(ui:&mut Ui,page:&str)->String{
 fn show_scan(ui:&Ui,v:&ocr::Scan){
     ui.set_detail(&v.text);let words=v.lines.iter().flatten().map(|w|format!("{}    ({}, {}) · {} × {}",w.text,w.x,w.y,w.width,w.height)).collect::<Vec<_>>();ui.set_rows(&words);
 }
-pub fn scan_saved(ui:&Ui,id:&str,bytes:Vec<u8>)->Result<String,String>{
-    scan_worker::bytes(ui, id.to_owned(), bytes)
+pub fn scan_saved(ui:&mut Ui,id:&str,bytes:Vec<u8>)->Result<String,String>{
+    if ui.page!="ocr"{ui.navigate("ocr");}
+    ui.set_input(id);scan_worker::bytes(ui,id.to_owned(),bytes)
 }
 fn ocr_action(ui:&mut Ui,key:&str)->Result<String,String>{
     match key{
         "clear"=>{scan_worker::cancel();SCAN.with(|s|s.borrow_mut().take());ui.set_rows(&[]);ui.set_detail("");ui.set_input("");Ok("Cleared.".into())}
         "file"=>{let Some(p)=choose_image(ui)? else{return Ok(String::new())};ui.set_input(&p.to_string_lossy());scan_worker::file(ui,p)}
         "clipboard"=>{let bytes=crate::workspace::current_clipboard_png(ui)?;
-            let id="Current clipboard image";ui.set_input(id);scan_saved(ui,id,bytes)}
-        "scan"=>{let input=ui.input();let p=Path::new(input.trim());if p.is_file(){scan_worker::file(ui,p.to_path_buf())}else{scan_saved(ui,&input,crate::workspace::image_png(ui,input.trim())?)}}
+            ui.set_input(scan_worker::CLIPBOARD);scan_worker::clipboard_image(ui,Some(bytes))}
+        "scan"=>{let input=ui.input();if input==scan_worker::CLIPBOARD{return scan_worker::clipboard_image(ui,None)}let p=Path::new(input.trim());if p.is_file(){scan_worker::file(ui,p.to_path_buf())}else{scan_saved(ui,&input,crate::workspace::image_png(ui,input.trim())?)}}
         "select"|"word"=>{let i=ui.selected().ok_or("Choose a word.")?;
             let range=SCAN.with(|cell|{let s=cell.borrow();let scan=s.as_ref()?;let mut offset=0usize;let mut n=0;
                 for line in &scan.lines{for(j,w)in line.iter().enumerate(){if j>0{offset+=1;}let length=w.text.encode_utf16().count();if n==i{return Some((offset,length));}offset+=length;n+=1;}offset+=2;}None}).ok_or("Scan an image first.")?;
@@ -105,7 +106,7 @@ pub fn action(ui:&mut Ui,page:&str,key:&str)->Result<String,String>{
             audio::apply(&r,key,&ui.input())?;refresh(ui,page)?;if let Some(i)=AUDIO.with(|a|a.borrow().iter().position(|n|n.id==r.id&&n.session==r.session)){ui.select_row(i);}Ok("Audio setting updated.".into())}
         "camera"=>{let c=CAMERAS.with(|a|a.borrow().get(index).cloned()).ok_or("Refresh cameras and select one.")?;
             match key{"select"=>{ui.set_detail(&c.name);Ok(String::new())},"ranges"=>{ui.set_detail(&physical::ranges(&c)?);Ok("Enter a value, auto or default, then choose the property to change.".into())},
-                "preview"=>{physical::preview(&c,unsafe{GetDlgItem(ui.hwnd.0,3480)})?;Ok("Preview active.".into())},
+                "preview"=>{physical::preview(&c,ui.physical_preview_host())?;Ok("Preview active.".into())},
                 "pan"|"tilt"|"zoom"|"focus"|"exposure"|"brightness"|"contrast"|"saturation"|"sharpness"|"white balance"=>{physical::set(&c,key,&ui.input())?;ui.set_detail(&physical::ranges(&c)?);Ok("Camera setting updated.".into())},
                 _=>Err("Unknown camera control.".into())}}
         _=>Err("Unknown device page.".into())

@@ -11,8 +11,10 @@ mod cli;
 mod update;
 
 type Outcome = Result<View, String>;
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Transport {pub previous:bool,pub pause:bool,pub next:bool,pub seek:bool}
 #[derive(Default, Clone)]
-struct View { rows: Vec<String>, detail: String, status: String, url: Option<String>, media_playing: bool, position:i64, duration:i64, privacy: Option<String>, notifications: Option<Vec<(String,String)>> }
+struct View { rows: Vec<String>, detail: String, status: String, url: Option<String>, media_playing: bool, transport:Transport, position:i64, duration:i64, privacy: Option<String>, notifications: Option<Vec<(String,String)>> }
 impl View {
     fn status(value: &str) -> Self { Self { status: value.to_owned(), ..Self::default() } }
 }
@@ -62,10 +64,12 @@ fn media(command: &str, seconds: i64) -> windows::core::Result<View> {
     if let Some(request) = request { if !request.join()? { return Ok(View::status("The media app declined this control.")); } }
     let item = session.TryGetMediaPropertiesAsync()?.join()?;
     let timeline = session.GetTimelineProperties()?;
-    let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == Playback::Playing;
+    let playback=session.GetPlaybackInfo()?;let playing=playback.PlaybackStatus()?==Playback::Playing;
+    let controls=playback.Controls()?;
+    let transport=Transport{previous:controls.IsPreviousEnabled()?,pause:controls.IsPauseEnabled()?,next:controls.IsNextEnabled()?,seek:controls.IsPlaybackPositionEnabled()?};
     let rows = vec![item.Title()?.to_string(), item.Artist()?.to_string(), item.AlbumTitle()?.to_string(),
         format!("{} · {} / {} seconds", if playing {"Playing"} else {"Paused"}, timeline.Position()?.Duration / 10_000_000, timeline.EndTime()?.Duration / 10_000_000)];
-    Ok(View {rows, media_playing: playing, position:timeline.Position()?.Duration/10_000_000, duration:timeline.EndTime()?.Duration/10_000_000, status: session.SourceAppUserModelId()?.to_string(), ..Default::default()})
+    Ok(View {rows, transport, media_playing: playing, position:timeline.Position()?.Duration/10_000_000, duration:timeline.EndTime()?.Duration/10_000_000, status: session.SourceAppUserModelId()?.to_string(), ..Default::default()})
 }
 fn notifications(privacy: &str) -> windows::core::Result<View> {
     let listener = Listener::Current()?;
@@ -335,10 +339,10 @@ pub(crate) fn notification_permission()->&'static str{
 }
 pub(crate) fn clear_notice_history(){let mut s=state();s.cleared_notifications=s.notification_ids.clone().unwrap_or_default();if let Some(v)=s.cache.get_mut("notifications"){v.rows.clear();}}
 pub(crate) fn notice_titles()->Vec<String>{state().cache.get("notifications").map(|v|v.rows.clone()).unwrap_or_default()}
-pub(crate) fn media_details()->Option<(String,String,i64,i64)>{
+pub(crate) fn media_details()->Option<(String,String,i64,i64,Transport)>{
     let s=state();let v=s.cache.get("media")?;if !v.media_playing{return None}
     let artist=[v.rows.get(1).map(String::as_str).unwrap_or(""),v.status.as_str()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join(" · ");
-    Some((v.rows.first()?.clone(),artist,v.position,v.duration))
+    Some((v.rows.first()?.clone(),artist,v.position,v.duration,v.transport))
 }
 pub(crate) fn home_media()->Option<String> {
     let s=state();
@@ -357,6 +361,21 @@ pub fn compact_preview()->Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore="opens native media controls on a private desktop without sending commands to a media player"]
+    fn home_media_buttons_follow_session_capabilities(){
+        use windows_sys::Win32::UI::{Input::KeyboardAndMouse::IsWindowEnabled,WindowsAndMessaging::*};
+        crate::workspace::with_private_test_desktop(||unsafe{
+            let h=CreateWindowExW(0,crate::ui::wide("STATIC").as_ptr(),std::ptr::null(),WS_POPUP,0,0,840,300,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null());
+            let mut ui=Ui::new(windows::Win32::Foundation::HWND(h),std::env::temp_dir().join(format!("Buddy-media-{}",std::process::id())),true).unwrap();ui.expanded=true;
+            let mut session=View{rows:vec!["Test radio".into(),"Test artist".into()],duration:180,position:12,media_playing:true,..Default::default()};
+            for (capabilities,expected) in [(Transport{pause:true,..Default::default()},[false,true,false,false]),(Transport{previous:true,pause:false,next:true,seek:true},[true,false,true,true])]{
+                session.transport=capabilities;state().cache.insert("media".into(),session.clone());ui.navigate("home");
+                for (i,enabled) in expected.into_iter().enumerate(){let control=GetDlgItem(h,3520+i as i32);assert!(!control.is_null());assert_eq!(IsWindowEnabled(control)!=0,enabled);}
+            }
+            state().cache.remove("media");drop(ui);DestroyWindow(h);
+        });
+    }
     #[test]
     fn counters_have_five_numeric_fields() {
         let result=sample().unwrap();

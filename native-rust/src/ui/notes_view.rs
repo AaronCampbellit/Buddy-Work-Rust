@@ -76,6 +76,24 @@ fn move_to(h: Handle, r: RECT, visible: bool) {
 }
 
 impl Ui {
+    pub(crate) fn note_scroll_anchor(&self) -> Option<String> {
+        // Navigation first clears this shared LISTBOX. During an ordinary
+        // Notes refresh its rows still correspond to the previous note_ids.
+        unsafe {
+            if self.page != "notes" || self.note_ids.is_empty()
+                || SendMessageW(self.list,LB_GETCOUNT,0,0) != self.note_ids.len() as isize {
+                return None;
+            }
+            let top=SendMessageW(self.list,LB_GETTOPINDEX,0,0);
+            usize::try_from(top).ok().and_then(|i| self.note_ids.get(i)).cloned()
+        }
+    }
+    pub(crate) fn restore_note_scroll(&self,anchor:Option<String>) {
+        if let Some(row)=anchor.and_then(|id|self.note_ids.iter().position(|record|record==&id)){
+            unsafe{SendMessageW(self.list,LB_SETTOPINDEX,row,0);}
+        }
+    }
+
     pub(crate) fn formatted_note_date(stamp:&str)->String { note_date(stamp) }
 
     fn edited_row(&self) -> Option<&Vec<String>> {

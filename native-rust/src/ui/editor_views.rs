@@ -52,6 +52,14 @@ impl EditorViews{
 }
 
 impl Ui{
+    fn rewrite_footer(&self,width:i32)->(String,i32){
+        let mut status=window_text(self.notice,4096);
+        if status.is_empty()||["Enter the text below","Choose the rewrite","Text ready."].iter().any(|prefix|status.starts_with(prefix)){
+            status="Sends this text to OpenAI when you choose Rewrite. Connect in Settings → AI Rewrite.".into();
+        }
+        let wraps=unsafe{let dc=GetDC(self.hwnd.0);let measured=chrome::width(dc,&status,self.fonts[0]);ReleaseDC(self.hwnd.0,dc);measured>width};
+        (status,if wraps{34}else{17})
+    }
     pub(crate) fn editor_rewrite_draft(&self,value:&str){
         if self.page!="rewrite"{return}
         let pane=self.editor_views.get_or_init(||EditorViews::new(self));
@@ -88,7 +96,9 @@ impl Ui{
             place(handle,x,y,width,height);used.push(id);
         };
         let busy=activity::rewrite_busy();
+        let caption=|id,name:&str|{let h=pane.h(id);if window_text(h,100)!=name{label(h,name)}};
         if page=="rewrite"{
+            caption(SUBMIT,if window_text(pane.h(RESULT),1).is_empty(){"Rewrite"}else{"Try again"});caption(COPY,"Copy rewrite");caption(TONE,LABELS[pane.preset.get()]);
             put(BACK,14,10,103,28);put(TONE,154,10,96,28);
             let mut x=256;let custom=pane.preset.get()==3;
             if custom{let width=(w-481).clamp(65,180);put(PRESET,x,12,width,24);x+=width+6;}
@@ -99,7 +109,7 @@ impl Ui{
             put(COPY,ax,ay,75,28);
             if !pane.fixed.get(){put(OPTIONS,w-38,10,25,28);}
             unsafe{SetPropW(pane.h(RESULT),wide("BuddyRewriteHintColor").as_ptr(),(mix(self.appearance.0,self.appearance.2,158)as usize+1)as _);}
-            let two=if row2{86}else{52};let half=(w-38)/2;let height=(h-two-55).max(35);
+            let two=if row2{86}else{52};let half=(w-38)/2;let (_,footer)=self.rewrite_footer(self.px(w-28));let height=(h-two-38-footer).max(24);
             put(SOURCE,22,two+18,half-16,height);put(RESULT,32+half,two+18,half-16,height);
             for id in [SOURCE,RESULT]{
                 let edit=pane.h(id);
@@ -116,6 +126,12 @@ impl Ui{
             for(id,enabled)in[(TONE,!busy),(SUBMIT,can_send),(COPY,!busy&&!result.is_empty()),(PRESET,!busy)]{unsafe{EnableWindow(pane.h(id),i32::from(enabled));}}
         }else{
             let ocr=page=="ocr";
+            caption(SUBMIT,if ocr{"Rescan"}else{"Read text"});caption(COPY,"Copy text");
+            let ready=if ocr{!self.input().trim().is_empty()}else{workspace::selected_image_id(self).is_some()};
+            let has_text=ocr&&!self.detail().is_empty();
+            for (id,allowed) in [(SUBMIT,ready),(COPY,has_text),(RESET,ready||has_text),(OPEN,ready),(SAVE,ready)]{
+                unsafe{EnableWindow(pane.h(id),i32::from(allowed));}
+            }
             put(BACK,0,2,101,28);put(FILE,107,2,90,28);put(PASTE,203,2,116,28);
             let actions_y=if w<615{36}else{2};let mut x=if w<615{0}else{325};
             for (id,ww) in if ocr{[(SUBMIT,66),(COPY,72),(RESET,49)]}else{[(OPEN,83),(SAVE,73),(SUBMIT,79)]}{
@@ -150,9 +166,8 @@ impl Ui{
         if self.page=="rewrite"{
             text(dc,rect(r.left+self.px(123),r.top+self.px(9),self.px(30),self.px(28)),"Tone",self.fonts[0],ink,LEFT);
             label_above(s.h(SOURCE),"Original",8);label_above(s.h(RESULT),"Rewrite",8);
-            let status=window_text(self.notice,4096);
-            let status=if status.starts_with("Enter the text below")||status.starts_with("Choose the rewrite")||status.starts_with("Text ready.")||status.is_empty(){"Sends this text to OpenAI when you choose Rewrite. Connect in Settings → AI Rewrite."}else{&status};
-            text(dc,rect(r.left+self.px(14),r.bottom-self.px(27),r.right-r.left-self.px(28),self.px(17)),status,self.fonts[0],muted,LEFT);
+            let width=r.right-r.left-self.px(28);let (status,height)=self.rewrite_footer(width);
+            text(dc,rect(r.left+self.px(14),r.bottom-self.px(10+height),width,self.px(height)),&status,self.fonts[0],muted,DT_LEFT|DT_WORDBREAK|DT_TOP);
         }else if self.page=="ocr"{
             let b=bounds(self.input_box);panel(dc,inset(b,-self.px(3)),self.px(5),field,edge);
             label_above(self.list,"Words",4);label_above(self.detail_box,"Recognized text",5);
@@ -160,12 +175,11 @@ impl Ui{
     }
     pub(super) fn draw_editor_button(&self,di:&DRAWITEMSTRUCT)->bool{
         let id=di.CtlID as u16;if !(BACK..=LAST).contains(&id)||matches!(id,SOURCE|RESULT|PRESET){return false}
-        let Some(s)=self.editor_views.get()else{return false};let (bg,field,ink,accent)=self.appearance;
+        let (bg,field,ink,accent)=self.appearance;
         let disabled=di.itemState&ODS_DISABLED!=0;let hot=chrome::hovered(di.hwndItem)||di.itemState&ODS_SELECTED!=0;
         let face=if hot&&!disabled{mix(field,ink,15)}else{chrome::control(self.appearance)};let color=if disabled{mix(bg,ink,113)}else{ink};
         let focus=di.itemState&ODS_FOCUS!=0&&di.itemState&ODS_NOFOCUSRECT==0;
-        let caption=match id{BACK=>"Back to clipboard",TONE=>LABELS[s.preset.get()],SUBMIT if self.page=="ocr"=>"Rescan",SUBMIT if self.page=="markup"=>"Read text",SUBMIT=>if window_text(s.h(RESULT),1).is_empty(){"Rewrite"}else{"Try again"},
-            CANCEL=>"Cancel",COPY if self.page=="rewrite"=>"Copy rewrite",COPY=>"Copy text",OPTIONS=>"···",FILE=>"Choose image",PASTE=>"Clipboard image",RESET=>"Clear",OPEN=>"Open editor",SAVE=>"Save PNG",_=>""};
+        let name=window_text(di.hwndItem,100);let caption=if id==OPTIONS{"···"}else{&name};
         fill(di.hDC,di.rcItem,bg);panel(di.hDC,di.rcItem,self.px(6),face,if focus{accent}else{mix(bg,ink,48)});
         if id==TONE{
             let r=di.rcItem;text(di.hDC,rect(r.left+self.px(9),r.top,r.right-r.left-self.px(27),r.bottom-r.top),caption,self.fonts[0],color,LEFT);
@@ -174,6 +188,7 @@ impl Ui{
         true
     }
     pub(super) fn editor_command(&mut self,id:u16,code:u16)->bool{
+        if matches!(id,INPUT|DETAIL) && self.page=="ocr" && code==EN_CHANGE as u16{self.layout();return true}
         if !(BACK..=LAST).contains(&id){return false}
         let Some(s)=self.editor_views.get()else{return true};if !handles(self.page)||s.syncing.get(){return true}
         if code==EN_CHANGE as u16&&matches!(id,SOURCE|PRESET){
@@ -216,4 +231,61 @@ unsafe extern "system" fn empty_result_proc(h:Handle,msg:u32,wp:usize,lp:isize,i
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+
+    #[test]
+    #[ignore="exercises native keyboard and device layouts on a private Windows desktop"]
+    fn editor_actions_and_camera_controls_stay_reachable() {
+        crate::workspace::with_private_test_desktop(|| unsafe {
+            let name=wide("BuddyNativeEditorAndDeviceQA");
+            let instance=windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
+            let class=WNDCLASSW {lpfnWndProc:Some(crate::window_proc),hInstance:instance,lpszClassName:name.as_ptr(),..Default::default()};
+            RegisterClassW(&class);
+            let hwnd=CreateWindowExW(0,name.as_ptr(),std::ptr::null(),WS_POPUP|WS_CLIPCHILDREN,0,0,1000,600,std::ptr::null_mut(),std::ptr::null_mut(),instance,std::ptr::null());
+            assert!(!hwnd.is_null());
+            let profile=std::env::temp_dir().join(format!("Buddy-native-device-editor-{}",std::process::id()));
+            let mut ui=Ui::new(windows::Win32::Foundation::HWND(hwnd),profile,true).unwrap();
+            ui.expanded=true;
+            crate::WINDOW.with(|slot|*slot.borrow_mut()=Some(ui));
+            let mut failures=Vec::new();
+            for (zoom,width) in [(100,1920),(150,1024),(175,880)] {
+                crate::with_ui(|ui|{
+                    ui.zoom=zoom;ui.apply_appearance();
+                    let work=RECT{left:0,top:0,right:width,bottom:960};
+                    let layout=crate::island::Layout::new(work,crate::shell::dpi(hwnd),zoom,crate::island::Placement::Left,300,&[]);
+                    let host=layout.host;
+                    SetWindowPos(hwnd,std::ptr::null_mut(),host.left,host.top,host.right-host.left,host.bottom-host.top,SWP_NOZORDER|SWP_NOACTIVATE);
+                    crate::island::configure(layout,true);crate::island::request(true,true);
+                    ui.navigate("rewrite");
+                    assert_eq!(IsWindowEnabled(GetDlgItem(hwnd,SUBMIT as i32)),0);
+                    ui.navigate("ocr");ui.set_input("fixture.png");ui.set_detail("Recognized sample");ui.layout();
+                    for (id,caption) in [(SUBMIT,"Rescan"),(COPY,"Copy text")] {
+                        let h=GetDlgItem(hwnd,id as i32);
+                        if IsWindowEnabled(h)==0 || window_text(h,100)!=caption {failures.push(format!("{zoom}% OCR {caption} disabled or named {}",window_text(h,100)));}
+                    }
+                    ui.navigate("studio");
+                    let viewport=GetDlgItem(hwnd,3481);
+                    let target=if viewport.is_null(){hwnd}else{viewport};
+                    let value=GetDlgItem(target,3443);let more=GetDlgItem(target,3428);let apply=GetDlgItem(target,3441);
+                    assert!(!value.is_null()&&!apply.is_null()&&!more.is_null());
+                    let mut a=RECT::default();let mut b=RECT::default();let mut overlaps=RECT::default();GetWindowRect(value,&mut a);GetWindowRect(apply,&mut b);
+                    if IntersectRect(&mut overlaps,&a,&b)!=0{failures.push(format!("{zoom}% studio value and Apply overlap"));}
+                    let asset=GetDlgItem(target,3446);
+                    if GetWindowLongW(asset,GWL_STYLE) as u32&WS_VISIBLE==0{failures.push(format!("{zoom}% studio Add image unreachable"));}
+                    if !viewport.is_null(){
+                        SendMessageW(viewport,WM_VSCROLL,SB_BOTTOM as usize,0);
+                        let mut v=RECT::default();GetClientRect(viewport,&mut v);GetWindowRect(apply,&mut b);MapWindowPoints(std::ptr::null_mut(),viewport,(&mut b as *mut RECT).cast(),2);
+                        if b.left<0||b.right>v.right||b.top<0||b.bottom>v.bottom{failures.push(format!("{zoom}% studio footer clipped after scrolling"));}
+                    }
+                });
+            }
+            DestroyWindow(hwnd);crate::WINDOW.with(|slot|slot.borrow_mut().take());
+            assert!(failures.is_empty(),"{}",failures.join("\n"));
+        });
+    }
 }

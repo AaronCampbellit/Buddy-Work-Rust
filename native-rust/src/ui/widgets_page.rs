@@ -3,7 +3,7 @@ use crate::chrome::{self,fill,icon,inset,mix,panel,rect,text,Icon};
 use std::{cell::{Cell,RefCell},ptr::{null,null_mut}};
 use windows_sys::Win32::{Foundation::{HWND,POINT,RECT},UI::{
     Controls::{SetScrollInfo,SetScrollPos,DRAWITEMSTRUCT,ODT_COMBOBOX,ODT_BUTTON,ODS_DISABLED,ODS_FOCUS,ODS_NOFOCUSRECT,ODS_SELECTED},
-    Input::KeyboardAndMouse::EnableWindow,Shell::{DefSubclassProc,RemoveWindowSubclass,SetWindowSubclass}
+    Input::KeyboardAndMouse::{EnableWindow,VK_HOME,VK_END,VK_NEXT,VK_PRIOR},Shell::{DefSubclassProc,RemoveWindowSubclass,SetWindowSubclass}
 }};
 
 const VIEW:u16=1900;
@@ -56,7 +56,7 @@ impl Timers{
 
 struct State{
     view:Cell<HWND>,scale:Cell<f32>,colors:Cell<chrome::Colors>,fonts:Cell<[HFONT;4]>,
-    timers:RefCell<Timers>,scroll:Cell<i32>,on:Cell<bool>,tick:Cell<u32>,last_refresh:Cell<u64>,
+    timers:RefCell<Timers>,scroll:Cell<i32>,wheel:super::WheelMotion,on:Cell<bool>,tick:Cell<u32>,last_refresh:Cell<u64>,
     notes:RefCell<Vec<String>>,clips:RefCell<Vec<(String,String)>>,
 }
 impl State{
@@ -180,7 +180,7 @@ pub(super) struct WidgetsPage{state:Box<State>}
 impl WidgetsPage{
     pub(super) fn new(parent:Handle,font:HFONT)->Self{
         let state=Box::new(State{view:Cell::new(null_mut()),scale:Cell::new(1.),colors:Cell::new((0xffffff,0xffffff,0,0)),fonts:Cell::new([font;4]),timers:Default::default(),
-            scroll:Cell::new(0),on:Cell::new(false),tick:Cell::new(0),last_refresh:Cell::new(0),notes:Default::default(),clips:Default::default()});
+            scroll:Cell::new(0),wheel:Default::default(),on:Cell::new(false),tick:Cell::new(0),last_refresh:Cell::new(0),notes:Default::default(),clips:Default::default()});
         let viewport=add(parent,"STATIC","Timer and side widget settings",VIEW,WS_VSCROLL|WS_CLIPCHILDREN,WS_EX_CONTROLPARENT,font);
         state.view.set(viewport);show(viewport,false);
         let data=state.as_ref()as *const State as usize;unsafe{SetWindowSubclass(viewport,Some(view_proc),1,data);}
@@ -234,7 +234,7 @@ impl WidgetsPage{
     }
     pub(super) fn layout(&self,ui:&Ui,on:bool,bounds:RECT){
         let s=&self.state;let was=s.on.replace(on);let hwnd=s.view.get();
-        if !on{if was{unsafe{KillTimer(hwnd,1);}s.tick.set(0);}show(hwnd,false);return;}
+        if !on{if was{s.wheel.reset();unsafe{KillTimer(hwnd,1);}s.tick.set(0);}show(hwnd,false);return;}
         s.scale.set(ui.scale());s.colors.set(ui.appearance);
         let fonts=[ui.fonts[0],ui.fonts[1],ui.fonts[8],ui.fonts[9]];
         if s.fonts.replace(fonts)!=fonts{unsafe{
@@ -299,6 +299,17 @@ unsafe extern "system" fn focus_proc(h:HWND,msg:u32,wp:usize,lp:isize,sub:usize,
     let state=&*(data as *const State);
     if msg==WM_SETFOCUS{state.ensure_visible(h);}
     let id=GetDlgCtrlID(h) as u16;
+    let combo=matches!(id,NOTE|CLIP);
+    if msg==WM_MOUSEWHEEL && (!combo || SendMessageW(h,CB_GETDROPPEDSTATE,0,0)==0){
+        return SendMessageW(state.view.get(),msg,wp,lp);
+    }
+    if !combo && msg==WM_GETDLGCODE && lp!=0 && matches!((*(lp as *const MSG)).wParam as u16,VK_HOME|VK_END|VK_NEXT|VK_PRIOR){
+        return DefSubclassProc(h,msg,wp,lp)|DLGC_WANTMESSAGE as isize;
+    }
+    if !combo && msg==WM_KEYDOWN{
+        let movement=match wp as u16{VK_HOME=>Some(SB_TOP),VK_END=>Some(SB_BOTTOM),VK_NEXT=>Some(SB_PAGEDOWN),VK_PRIOR=>Some(SB_PAGEUP),_=>None};
+        if let Some(action)=movement{return SendMessageW(state.view.get(),WM_VSCROLL,action as _,0);}
+    }
     if matches!(msg,WM_PAINT|WM_PRINT|WM_PRINTCLIENT) && matches!(id,NOTE|CLIP|NOTE_LABEL|CLIP_LABEL|POM_SIDE|WATCH_SIDE) {
         let mut ps=PAINTSTRUCT::default();
         let dc=if msg==WM_PAINT{BeginPaint(h,&mut ps)}else{wp as HDC};
@@ -358,8 +369,8 @@ unsafe extern "system" fn view_proc(h:HWND,msg:u32,wp:usize,lp:isize,sub:usize,d
         WM_PRINT|WM_PRINTCLIENT=>{if wp!=0{
             let dc=wp as HDC;s.paint(dc);if lp as i32&PRF_CHILDREN!=0{print_children(h,dc);}
         }return 0;}
-        WM_MOUSEWHEEL=>{let delta=((wp>>16)as i16)as i32;s.pan(s.scroll.get()-delta*s.px(36)/120);return 0;}
-        WM_VSCROLL=>{let jump=match (wp&0xffff)as i32{
+        WM_MOUSEWHEEL=>{let distance=s.wheel.distance((wp>>16)as i16,s.px(12),s.client().bottom);s.pan(s.scroll.get().saturating_add(distance));return 0;}
+        WM_VSCROLL=>{s.wheel.reset();let jump=match (wp&0xffff)as i32{
             SB_LINEUP=>-s.px(16),SB_LINEDOWN=>s.px(16),SB_PAGEUP=>-s.client().bottom,SB_PAGEDOWN=>s.client().bottom,
             SB_TOP=>-s.px(CONTENT_HEIGHT),SB_BOTTOM=>s.px(CONTENT_HEIGHT),
             SB_THUMBTRACK|SB_THUMBPOSITION=>{let mut info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>()as _,fMask:SIF_TRACKPOS,..Default::default()};GetScrollInfo(h,SB_VERT,&mut info);info.nTrackPos-s.scroll.get()}

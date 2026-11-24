@@ -6,7 +6,7 @@ use std::{cell::{Cell, RefCell}, collections::HashMap, path::Path, ptr::{null, n
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     UI::{Controls::{SetScrollInfo, DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED},
-        Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKeyState, SetFocus, VK_SHIFT, VK_TAB, VK_DOWN, VK_END, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP},
+        Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, GetKeyState, SetFocus, VK_LEFT, VK_RIGHT, VK_SHIFT, VK_TAB, VK_DOWN, VK_END, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP},
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass}},
 };
 #[path = "workspaces_paint.rs"] mod paint;
@@ -117,6 +117,7 @@ struct State{
     view:Cell<HWND>,grid:Cell<HWND>,page:Cell<&'static str>,scale:Cell<f32>,colors:Cell<chrome::Colors>,fonts:Cell<[HFONT;4]>,
     filter:Cell<usize>,query:RefCell<String>,form:Cell<bool>,typed_path:Cell<bool>,app:Cell<bool>,counts:Cell<[usize;6]>,
     cards:RefCell<Vec<Card>>,slots:Cell<usize>,first:Cell<usize>,scroll:Cell<i32>,suppress:Cell<bool>,dirty:Cell<bool>,
+    limit:Cell<i32>,rendered:Cell<usize>,bindings_dirty:Cell<bool>,wheel:super::scroll_pane::WheelMotion,
     highlight:Cell<Option<usize>>, search_rect:Cell<RECT>,grid_top:Cell<i32>,hidden_filter:Cell<usize>,download_counts:Cell<(usize,usize)>,can_clear:Cell<bool>,
     pictures:RefCell<HashMap<String,Option<Rc<Picture>>>>,pending:Cell<bool>,
 }
@@ -158,7 +159,7 @@ impl State{
         }
         self.can_clear.set(if page=="clipboard"{can_clear}else{counts[0]>0});
         if page=="clipboard"{counts[0]=ui.records.get("clipboard").map_or(0,Vec::len);}
-        self.download_counts.set((active,counts[0].saturating_sub(active)));self.counts.set(counts);self.cards.replace(cards);self.dirty.set(false);
+        self.download_counts.set((active,counts[0].saturating_sub(active)));self.counts.set(counts);self.cards.replace(cards);self.dirty.set(false);self.bindings_dirty.set(true);
     }
     fn layout(&self){
         let r=client(self.view.get());let w=self.dp(r.right);let page=self.page.get();let q=!self.query.borrow().is_empty();
@@ -216,19 +217,49 @@ impl State{
         unsafe{InvalidateRect(self.view.get(),null(),0);}
     }
     fn metrics(&self)->(usize,i32,i32,i32){
-        let width=self.dp(client(self.grid.get()).right).max(1);let page=self.page.get();
+        self.metrics_for(self.dp(client(self.grid.get()).right).max(1))
+    }
+    fn metrics_for(&self,width:i32)->(usize,i32,i32,i32){
+        let page=self.page.get();
         let columns=if page=="clipboard"{if width+60<=700{3}else{4}}else if shelf(page){((width+5)/154).max(1)as usize}else{if width>390{2}else{1}};
         let height=if page=="clipboard"{139}else if shelf(page){76}else{62};let gap=if page=="downloads"{7}else{9};
         (columns,height,gap,width)
     }
     fn place_grid(&self){
-        let grid=self.grid.get();let (columns,ht,gap,_)=self.metrics();let count=self.cards.borrow().len();let rows=count.div_ceil(columns)as i32;
-        let height=self.dp(client(grid).bottom).max(1);let content=5+rows*(ht+gap);let scroll=self.scroll.get().clamp(0,(content-height).max(0));
-        self.scroll.set(scroll);
-        unsafe{let info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>()as _,fMask:SIF_RANGE|SIF_PAGE|SIF_POS,nMin:0,nMax:content-1,nPage:height as _,nPos:scroll,..Default::default()};SetScrollInfo(grid,SB_VERT,&info,1);}
-        let (columns,_,_,width)=self.metrics();let first_row=(scroll-5).max(0)/(ht+gap);let first=first_row as usize*columns;self.first.set(first);
+        let grid=self.grid.get();
+        let count=self.cards.borrow().len();let height=self.dp(client(grid).bottom).max(1);
+        // Decide whether the full-width grid can fit before taking its native
+        // scrollbar width away. It can change the number of shelf columns.
+        let full=self.dp(client(self.view.get()).right).max(1);
+        let (wide_columns,ht,gap,_)=self.metrics_for(full);
+        let extent=|cols|if count==0{0}else{5+count.div_ceil(cols)as i32*(ht+gap)};
+        let set_range=|content:i32,pos:i32|unsafe{
+            let info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>()as _,fMask:SIF_RANGE|SIF_PAGE|SIF_POS,nMin:0,nMax:(content-1).max(0),nPage:height as _,nPos:pos,..Default::default()};
+            SetScrollInfo(grid,SB_VERT,&info,1);
+        };
+        let wide_extent=extent(wide_columns);
+        let has_bar=unsafe{GetWindowLongW(grid,GWL_STYLE)as u32&WS_VSCROLL!=0};
+        if (wide_extent>height)!=has_bar{set_range(wide_extent,self.scroll.get());}
+        let (columns,_,_,width)=self.metrics();
+        let content=extent(columns);self.limit.set((content-height).max(0));
+        let scroll=self.scroll.get().clamp(0,self.limit.get());self.scroll.set(scroll);
+        set_range(content,scroll);
+        let first_row=(scroll-5).max(0)/(ht+gap);let first=first_row as usize*columns;
         let rows_visible=(height+ht+gap*2)/(ht+gap)+1;
         let limit=count.saturating_sub(first).min(rows_visible as usize*columns).min(MAX_SLOTS);
+        let old_first=self.first.replace(first);let old_limit=self.rendered.replace(limit);
+        let bindings=self.bindings_dirty.replace(false)||first!=old_first||limit!=old_limit;
+        // A held mouse button belongs to the card on which it was pressed.
+        if bindings{unsafe{
+            let pressed=GetCapture();
+            if !pressed.is_null()&&GetParent(pressed)==grid{SendMessageW(pressed,WM_CANCELMODE,0,0);}
+        }}
+        let focus=unsafe{GetFocus()};
+        let focused_id=unsafe{GetDlgCtrlID(focus)};
+        let focused_item=if unsafe{GetParent(focus)}==grid && focused_id>=i32::from(FIRST_CARD){
+            let control=(focused_id-i32::from(FIRST_CARD))as usize;
+            Some((old_first+control/STRIDE,control%STRIDE))
+        }else{None};
         for slot in self.slots.get()..limit{
             let id=FIRST_CARD+(slot*STRIDE)as u16;
             // Overlaid actions precede the full-size button in z-order.
@@ -237,6 +268,8 @@ impl State{
         }
         self.slots.set(self.slots.get().max(limit));
         let cards=self.cards.borrow();let cell_width=width-4-(columns as i32-1)*gap;
+        let mut moves=Vec::with_capacity(limit*STRIDE);
+        let mut place=|id,x,y,w,h|moves.push((self.hwnd(id),self.area(x,y,w,h)));
         for slot in 0..self.slots.get(){
             let id=FIRST_CARD+(slot*STRIDE)as u16;
             if slot>=limit{for j in 0..STRIDE{let h=self.hwnd(id+j as u16);if on(h){show(h,false)}}continue}
@@ -244,28 +277,59 @@ impl State{
             let x=2+col*gap+cell_width*col/columns as i32;
             let cw=cell_width*(col+1)/columns as i32-cell_width*col/columns as i32;
             let y=5+(index/columns)as i32*(ht+gap)-scroll;
-            self.place(id,x,y,cw,ht);self.set_enabled(id,entry.available);
-            let action=if entry.section=="clipboard" && entry.kind!="Link"{"Copy"}else{"Open"};
-            changed_text(self.hwnd(id),&format!("{action} {}",entry.title.chars().take(80).collect::<String>()));
+            place(id,x,y,cw,ht);
+            if bindings{
+                self.set_enabled(id,entry.available);
+                let action=if entry.section=="clipboard" && entry.kind!="Link"{"Copy"}else{"Open"};
+                changed_text(self.hwnd(id),&format!("{action} {}",entry.title.chars().take(80).collect::<String>()));
+            }
             let actions=entry.actions();
             for j in 1..STRIDE{
-                let aid=id+j as u16;let Some((key,_,desc))=actions.get(j-1)else{show(self.hwnd(aid),false);continue};
+                let aid=id+j as u16;let Some((key,_,desc))=actions.get(j-1)else{if bindings{show(self.hwnd(aid),false);}continue};
                 let (ax,ay,aw,ah)=match entry.section{
                     "clipboard"=>(x+cw-5-((actions.len()+1-j)as i32)*25,y+ht-29,24,24),
                     "downloads"=>(x+cw-(3-j as i32)*28,y+2,26,ht-4),
                     _=>(x+cw-25,y+3,22,22)
                 };
-                self.place(aid,ax,ay,aw,ah);self.set_enabled(aid,!(*key=="remove"&&entry.pinned||*key=="reveal"&&!entry.available));
-                changed_text(self.hwnd(aid),&format!("{desc}: {}",entry.title.chars().take(60).collect::<String>()));
+                place(aid,ax,ay,aw,ah);
+                if bindings{
+                    self.set_enabled(aid,!(*key=="remove"&&entry.pinned||*key=="reveal"&&!entry.available));
+                    changed_text(self.hwnd(aid),&format!("{desc}: {}",entry.title.chars().take(60).collect::<String>()));
+                }
             }
         }
         drop(cards);
+        // Reposition even overscanned/offscreen controls. One invalidation
+        // below avoids a separate erase and repaint for every button.
+        unsafe{
+            let flags=SWP_NOACTIVATE|SWP_NOZORDER|SWP_NOREDRAW|SWP_NOCOPYBITS|SWP_SHOWWINDOW;
+            let mut batch=BeginDeferWindowPos(moves.len().max(1)as i32);
+            for &(h,r) in &moves{
+                if batch.is_null(){break}
+                batch=DeferWindowPos(batch,h,null_mut(),r.left,r.top,(r.right-r.left).max(1),(r.bottom-r.top).max(1),flags);
+            }
+            if batch.is_null()||EndDeferWindowPos(batch)==0{
+                for (h,r) in moves{SetWindowPos(h,null_mut(),r.left,r.top,(r.right-r.left).max(1),(r.bottom-r.top).max(1),flags);}
+            }
+        }
+        if let Some((item,part))=focused_item{
+            let top=5+(item/columns)as i32*(ht+gap)-scroll;
+            let target=if item>=first && item-first<limit && top+ht>0 && top<height{
+                let button=self.hwnd(FIRST_CARD+((item-first)*STRIDE+part)as u16);
+                if on(button)&&unsafe{windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(button)}!=0 {button}else{grid}
+            }else{grid};
+            if focus!=target{unsafe{SetFocus(target);}}
+        }
         unsafe{RedrawWindow(grid,null(),null_mut(),RDW_INVALIDATE|RDW_ALLCHILDREN);}
-        if !self.pending.replace(true){unsafe{PostMessageW(GetParent(self.view.get()),WM_COMMAND,RETURN as _,0);}}
+        if bindings&&!self.pending.replace(true){unsafe{PostMessageW(GetParent(self.view.get()),WM_COMMAND,RETURN as _,0);}}
     }
-    fn scroll_to(&self,pos:i32){self.scroll.set(pos.max(0));self.place_grid();}
+    fn scroll_to(&self,pos:i32){
+        let next=pos.clamp(0,self.limit.get());
+        if self.scroll.replace(next)!=next{self.place_grid();}
+    }
+    fn reset_scroll(&self){self.wheel.reset();self.scroll.set(0);}
     fn initialize_pictures(&self,ui:&Ui){
-        self.pending.set(false);let cards=self.cards.borrow();let visible=cards.iter().skip(self.first.get()).take(self.slots.get()).filter(|c|!c.image.is_empty());
+        self.pending.set(false);let cards=self.cards.borrow();let visible=cards.iter().skip(self.first.get()).take(self.rendered.get()).filter(|c|!c.image.is_empty());
         let mut pics=self.pictures.borrow_mut();let keys:Vec<_>=visible.map(|c|(c.section,c.image.clone())).collect();
         pics.retain(|key,_|keys.iter().any(|(_,s)|s==key));
         for (section,key) in keys{
@@ -288,6 +352,7 @@ impl WorkspacesPage{
             colors:Cell::new(ui.appearance),fonts:Cell::new([ui.fonts[0],ui.fonts[1],ui.fonts[3],ui.fonts[4]]),
             filter:Default::default(),query:Default::default(),form:Default::default(),typed_path:Default::default(),app:Cell::new(true),
             counts:Default::default(),cards:Default::default(),slots:Default::default(),first:Default::default(),scroll:Default::default(),dirty:Cell::new(true),
+            limit:Default::default(),rendered:Default::default(),bindings_dirty:Cell::new(true),wheel:Default::default(),
             highlight:Cell::new(None),search_rect:Cell::new(RECT::default()),grid_top:Default::default(),hidden_filter:Default::default(),download_counts:Default::default(),
             can_clear:Default::default(),pictures:Default::default(),pending:Default::default(),suppress:Default::default()});
         let view=add(ui.hwnd.0,"STATIC","Workspace",VIEW,WS_CLIPCHILDREN,WS_EX_CONTROLPARENT,ui.fonts[0]);
@@ -326,7 +391,7 @@ impl Ui{
         if new_page{
             s.suppress.set(true);label(s.hwnd(QUERY),"");label(s.hwnd(NAME),"");label(s.hwnd(TARGET),"");s.suppress.set(false);
             s.set_cue(QUERY,if self.page=="clipboard"{"Search local history"}else{"Search items"});
-            s.query.borrow_mut().clear();s.filter.set(0);s.scroll.set(0);s.form.set(false);s.typed_path.set(false);s.app.set(true);s.highlight.set(None);
+            s.query.borrow_mut().clear();s.filter.set(0);s.reset_scroll();s.form.set(false);s.typed_path.set(false);s.app.set(true);s.highlight.set(None);
             s.pictures.borrow_mut().clear();changed=true;
         }
         let fonts=[self.fonts[0],self.fonts[1],self.fonts[3],self.fonts[4]];
@@ -365,7 +430,7 @@ impl Ui{
         if !handles(self.page)||s.page.get()!=self.page||!on(s.view.get())||s.suppress.get(){return true}
         if id==RETURN{s.initialize_pictures(self);return true}
         if id==QUERY&&code==EN_CHANGE as u16{
-            s.query.replace(window_text(s.hwnd(QUERY),32768));s.scroll.set(0);s.reload(self);s.layout();return true
+            s.query.replace(window_text(s.hwnd(QUERY),32768));s.reset_scroll();s.reload(self);s.layout();return true
         }
         if code!=BN_CLICKED as u16 && code!=CONTEXT{return true}
         let page=self.page;
@@ -409,11 +474,11 @@ impl Ui{
             return true
         }
         match id{
-            x if (FILTER..FILTER+6).contains(&x)=>{s.filter.set((id-FILTER)as usize);s.scroll.set(0);s.reload(self);s.layout();}
+            x if (FILTER..FILTER+6).contains(&x)=>{s.filter.set((id-FILTER)as usize);s.reset_scroll();s.reload(self);s.layout();}
             EXTRA_FILTERS=>{let start=s.hidden_filter.get();let counts=s.counts.get();let labels=(start..6).map(|i|format!("{}  {}",SHELF_FILTERS[i],counts[i])).collect::<Vec<_>>();
                 let picked=if labels.len()==1{Some(0)}else{self.choose(s.hwnd(id),&labels)};
-                if let Some(i)=picked{s.filter.set(start+i);s.scroll.set(0);s.reload(self);s.layout();}}
-            CLEAR_QUERY=>{label(s.hwnd(QUERY),"");s.query.borrow_mut().clear();s.scroll.set(0);s.reload(self);s.layout();crate::shell::focus(s.hwnd(QUERY));}
+                if let Some(i)=picked{s.filter.set(start+i);s.reset_scroll();s.reload(self);s.layout();}}
+            CLEAR_QUERY=>{label(s.hwnd(QUERY),"");s.query.borrow_mut().clear();s.reset_scroll();s.reload(self);s.layout();crate::shell::focus(s.hwnd(QUERY));}
             CLEAR=>{self.dispatch_card(page,None,"clear");}
             TOGGLE=>{s.form.set(!s.form.get());s.typed_path.set(false);s.set_cue(TARGET,if s.app.get(){r"C:\Path\App.exe"}else{"https://example.com"});s.layout();if s.form.get(){crate::shell::focus(s.hwnd(NAME))}}
             KIND=>{let labels=vec!["App".into(),"Website".into()];if let Some(i)=self.choose(s.hwnd(id),&labels){s.app.set(i==0);s.set_cue(TARGET,if i==0{r"C:\Path\App.exe"}else{"https://example.com"});s.layout();}}
@@ -426,7 +491,7 @@ impl Ui{
                     self.set_input(&target);self.set_detail(&title);
                 }
                 if self.dispatch_card(section,None,key){
-                    let s=&self.workspaces_page.get().unwrap().state;s.suppress.set(true);label(s.hwnd(QUERY),"");s.suppress.set(false);s.query.borrow_mut().clear();s.filter.set(0);s.scroll.set(0);
+                    let s=&self.workspaces_page.get().unwrap().state;s.suppress.set(true);label(s.hwnd(QUERY),"");s.suppress.set(false);s.query.borrow_mut().clear();s.filter.set(0);s.reset_scroll();
                     if matches!(id,CHOOSE|ADD){s.form.set(false);label(s.hwnd(NAME),"");label(s.hwnd(TARGET),"");s.app.set(true);}
                     s.reload(self);s.layout();
                 }
@@ -445,7 +510,7 @@ unsafe extern "system" fn child_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize,sub:usi
         WM_CONTEXTMENU if !matches!(id,NAME|TARGET|QUERY)=>{return SendMessageW(GetParent(state.view.get()),WM_COMMAND,((CONTEXT as usize)<<16)|id as usize,hwnd as _);}
         WM_GETDLGCODE if id>=FIRST_CARD||matches!(id,NAME|TARGET)=>{
             if lp!=0{let key=(*(lp as *const MSG)).wParam as u16;
-                if matches!(key,VK_TAB|VK_DOWN|VK_UP|VK_PRIOR|VK_NEXT|VK_HOME|VK_END)&&id>=FIRST_CARD||key==VK_RETURN&&matches!(id,NAME|TARGET){return DefSubclassProc(hwnd,msg,wp,lp)|DLGC_WANTMESSAGE as isize}
+                if matches!(key,VK_TAB|VK_LEFT|VK_RIGHT|VK_DOWN|VK_UP|VK_PRIOR|VK_NEXT|VK_HOME|VK_END)&&id>=FIRST_CARD||key==VK_RETURN&&matches!(id,NAME|TARGET){return DefSubclassProc(hwnd,msg,wp,lp)|DLGC_WANTMESSAGE as isize}
             }
         }
         WM_KEYDOWN if matches!(id,NAME|TARGET)&&wp==VK_RETURN as usize=>{PostMessageW(GetParent(state.view.get()),WM_COMMAND,ADD as _,0);return 0;}
@@ -472,7 +537,7 @@ unsafe extern "system" fn child_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize,sub:usi
                     return 0
                 }
             }
-            let target=match wp as u16{VK_DOWN=>index.saturating_add(columns),VK_UP=>index.saturating_sub(columns),VK_NEXT=>index.saturating_add(rows*columns),VK_PRIOR=>index.saturating_sub(rows*columns),VK_HOME=>0,VK_END=>n.saturating_sub(1),_=>return DefSubclassProc(hwnd,msg,wp,lp)}.min(n.saturating_sub(1));
+            let target=match wp as u16{VK_LEFT=>index.saturating_sub(1),VK_RIGHT=>index.saturating_add(1),VK_DOWN=>index.saturating_add(columns),VK_UP=>index.saturating_sub(columns),VK_NEXT=>index.saturating_add(rows*columns),VK_PRIOR=>index.saturating_sub(rows*columns),VK_HOME=>0,VK_END=>n.saturating_sub(1),_=>return DefSubclassProc(hwnd,msg,wp,lp)}.min(n.saturating_sub(1));
             let top=5+(target/columns)as i32*(ht+gap);let height=state.dp(client(state.grid.get()).bottom);
             state.scroll_to(if top<state.scroll.get(){top}else{state.scroll.get().max(top+ht-height)});
             if let Some(slot)=target.checked_sub(state.first.get()).filter(|s|*s<state.slots.get()){SetFocus(state.hwnd(FIRST_CARD+(slot*STRIDE)as u16));}
@@ -494,8 +559,22 @@ unsafe extern "system" fn view_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize,sub:usiz
         WM_PAINT=>{let mut ps=PAINTSTRUCT::default();let dc=BeginPaint(hwnd,&mut ps);s.paint(dc,grid);EndPaint(hwnd,&ps);return 0;}
         WM_PRINT|WM_PRINTCLIENT=>{if wp!=0{s.paint(wp as HDC,grid);if lp as i32&PRF_CHILDREN!=0{paint::print_children(hwnd,wp as HDC);}}return 0;}
         WM_ERASEBKGND=>return 1,
-        WM_MOUSEWHEEL=>{s.scroll_to(s.scroll.get()-(((wp>>16)as i16)as i32)*45/120);return 0;}
-        WM_VSCROLL if grid=>{let height=s.dp(client(hwnd).bottom);let delta=match (wp&0xffff)as i32{
+        WM_GETDLGCODE if grid && lp!=0 && matches!((*(lp as *const MSG)).wParam as u16,VK_TAB|VK_LEFT|VK_RIGHT|VK_DOWN|VK_UP|VK_PRIOR|VK_NEXT|VK_HOME|VK_END)=>{
+            return DefSubclassProc(hwnd,msg,wp,lp)|DLGC_WANTMESSAGE as isize;
+        }
+        WM_KEYDOWN if grid && s.rendered.get()>0 && matches!(wp as u16,VK_TAB|VK_LEFT|VK_RIGHT|VK_DOWN|VK_UP|VK_PRIOR|VK_NEXT|VK_HOME|VK_END)=>{
+            let (cols,ht,gap,_)=s.metrics();let row=((s.scroll.get()-5).max(0)+ht+gap-1)/(ht+gap);
+            let index=(row as usize*cols).min(s.cards.borrow().len()-1);
+            let target=s.hwnd(FIRST_CARD+((index-s.first.get())*STRIDE)as u16);
+            SetFocus(target);
+            if wp!=VK_TAB as usize{SendMessageW(target,msg,wp,lp);}
+            return 0;
+        }
+        WM_MOUSEWHEEL=>{
+            let distance=s.wheel.distance((wp>>16)as i16,15,s.dp(client(s.grid.get()).bottom));
+            s.scroll_to(s.scroll.get().saturating_add(distance));return 0;
+        }
+        WM_VSCROLL if grid=>{s.wheel.reset();let height=s.dp(client(hwnd).bottom);let delta=match (wp&0xffff)as i32{
             SB_LINEDOWN=>25,SB_LINEUP=>-25,SB_PAGEDOWN=>height,SB_PAGEUP=>-height,SB_TOP=>-s.scroll.get(),SB_BOTTOM=>i32::MAX/2,
             SB_THUMBTRACK|SB_THUMBPOSITION=>{let mut info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>()as _,fMask:SIF_TRACKPOS,..Default::default()};GetScrollInfo(hwnd,SB_VERT,&mut info);info.nTrackPos-s.scroll.get()},_=>0};
             s.scroll_to(s.scroll.get()+delta);return 0;}

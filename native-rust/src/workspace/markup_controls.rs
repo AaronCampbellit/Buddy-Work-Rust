@@ -52,11 +52,13 @@ const EXTRA:&[(usize,&str)]=&[(11,"Undo"),(12,"Redo"),(13,"Delete annotation"),(
     (14,"Remove crop"),(406,"Remove selected annotation")];
 fn create_child(h:HWND,e:&Editor,class:&str,name:&str,id:usize,flags:u32)->HWND{unsafe{
     let child=CreateWindowExW(0,platform::wide(class).as_ptr(),platform::wide(name).as_ptr(),WS_CHILD|WS_TABSTOP|flags,0,0,1,1,h,id as _,GetModuleHandleW(null()),null());
+    chrome::scroll::attach(child,flags,false);
     SendMessageW(child,WM_SETFONT,e.chrome.fonts[0]as _,0);
     if class=="BUTTON"{chrome::install_button(child);}
     child
 }}
 pub(super) unsafe fn create(h:HWND,e:&mut Editor){
+    chrome::scroll::set_palette(e.chrome.overlay.colors.0);
     for(i,(_,name))in TOOLS.iter().enumerate(){create_child(h,e,"BUTTON",name,100+i,BS_OWNERDRAW as u32);}
     for(i,name)in["Red","Blue","Yellow","Green","White","Black"].into_iter().enumerate(){create_child(h,e,"BUTTON",name,200+i,BS_OWNERDRAW as u32);}
     for &(id,name)in EXTRA{create_child(h,e,"BUTTON",name,id,BS_OWNERDRAW as u32);}

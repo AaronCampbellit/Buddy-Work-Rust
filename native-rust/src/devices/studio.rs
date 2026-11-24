@@ -210,5 +210,23 @@ pub(super) fn editor_fields()->Vec<(usize,String,String,String)>{
     })).unwrap_or_default())
 }
 pub(super) fn draft_state()->(bool,bool,String){
-    STUDIO.with(|s|s.try_borrow().ok().and_then(|s|s.as_ref().map(|st|(st.child.is_some(),st.draft!=st.state["effects"],st.selected_device.clone()))).unwrap_or_default())
+    STUDIO.with(|s|s.try_borrow().ok().and_then(|s|s.as_ref().map(|st|(st.child.is_some(),st.draft!=st.state["effects"]||st.assets!=st.state["assets"],st.selected_device.clone()))).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn asset_only_edits_can_be_applied_or_discarded(){
+        let folder=std::env::temp_dir().join(format!("Buddy-camera-asset-test-{}",std::process::id()));
+        let mut studio=Studio::load(&folder).unwrap();
+        studio.assets["logo"]="test-logo.png".into();
+        STUDIO.with(|state| {
+            let previous=state.replace(Some(studio));
+            assert!(draft_state().1,"a staged image changes the draft");
+            let mut slot=state.borrow_mut();let st=slot.as_mut().unwrap();st.assets=st.state["assets"].clone();drop(slot);
+            assert!(!draft_state().1,"discarding the image restores the saved draft");
+            state.replace(previous);
+        });
+    }
 }

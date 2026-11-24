@@ -182,6 +182,7 @@ unsafe fn window(editor:&RefCell<Editor>,opened:impl FnOnce(HWND))->Result<(),St
     }
     let mut msg=MSG::default();
     while GetMessageW(&mut msg,null_mut(),0,0)>0{
+        crate::chrome::scroll::route_wheel(&mut msg);
         if msg.message==WM_KEYDOWN{
             let e=editor.borrow();let typing=msg.hwnd==e.edit;drop(e);
             let ctrl=GetKeyState(VK_CONTROL as i32)<0;

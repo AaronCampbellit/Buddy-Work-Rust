@@ -29,6 +29,17 @@ pub struct Frame {
     pub expanded_body: RECT,
 }
 
+impl Frame {
+    pub fn visible_workspace(&self,scale:f32)->RECT{
+        let pad=(6.0*scale).ceil() as i32;
+        RECT{left:self.body.left+pad,right:self.body.right-pad,top:(46.0*scale).round() as i32,
+            bottom:self.body.bottom-(10.0*scale).round() as i32}
+    }
+    pub fn workspace_offset(&self)->i32{
+        (self.body.left+self.body.right-self.expanded_body.left-self.expanded_body.right)/2
+    }
+}
+
 fn rect(x: i32, y: i32, w: i32, h: i32) -> RECT {
     RECT {left:x, top:y, right:x+w, bottom:y+h}
 }

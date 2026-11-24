@@ -7,6 +7,7 @@ use windows_sys::Win32::{
 };
 use crate::ui::wide;
 mod text;
+pub(crate) mod scroll;
 
 pub type Colors=(u32,u32,u32,u32);
 pub fn rect(x:i32,y:i32,w:i32,h:i32)->RECT { RECT{left:x,top:y,right:x+w,bottom:y+h} }

@@ -1,6 +1,6 @@
 # Windows UI comparison
 
-The left column shows the original work-edition web interface rendered by Microsoft Edge on Windows 11. The right column shows the native Rust release on the same VM. Open either image at full size to inspect the text, spacing and controls.
+The left column shows the original work-edition web interface rendered by Microsoft Edge on Windows 11. The right column shows the native Rust interface on the same VM. The layout and performance measurements below were taken with beta.45. The Audio and camera screenshots were refreshed in beta.46. Open either image at full size to inspect the text, spacing and controls.
 
 The captures use the same synthetic notes, links, image, timer values and pinned websites. The expanded island is 840 × 376 at 100% scale. The pinned note sits beside the collapsed island in its own 400-pixel-wide window. Both editions use the custom center label “Buddy.”
 

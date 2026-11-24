@@ -30,12 +30,14 @@ fn fill_note(ui:&mut Ui){
     ui.dirty_note=false;
 }
 pub(crate) fn note_rows(ui:&mut Ui){
+    let scroll_anchor=ui.note_scroll_anchor();
     let q=ui.search.to_lowercase();
     let mut notes=ui.records.get("notes").into_iter().flatten().filter(|r|r.len()>=7).filter(|r|q.is_empty()||show(r,1).to_lowercase().contains(&q)||show(r,2).to_lowercase().contains(&q)).collect::<Vec<_>>();
     notes.sort_by(|a,b|show(b,3).cmp(show(a,3)).then_with(||show(b,6).cmp(show(a,6))));
     let rows=notes.iter().map(|n|format!("{}{}{}",if show(n,3)=="1"{"★  "}else{""},if show(n,1).is_empty(){"Untitled note"}else{show(n,1)},if show(n,5).is_empty(){""}else{"   ⏱"})).collect::<Vec<_>>();
     ui.note_ids=notes.iter().map(|n|n[0].clone()).collect();ui.set_rows(&rows);
     if let Some(i)=ui.active_note.as_ref().and_then(|id|ui.note_ids.iter().position(|s|s==id)){ui.select_row(i);}
+    ui.restore_note_scroll(scroll_anchor);
 }
 pub fn save_note(ui:&mut Ui)->Result<(),String>{
     save_note_inner(ui, false)

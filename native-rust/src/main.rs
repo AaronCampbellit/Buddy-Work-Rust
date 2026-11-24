@@ -13,13 +13,16 @@ pub mod storage;
 mod ui;
 mod workspace;
 pub use ui::Ui;
-use std::{cell::RefCell,ffi::OsString,os::windows::ffi::OsStringExt,path::{Path,PathBuf},ptr::{null,null_mut}};
+use std::{cell::{Cell,RefCell},ffi::OsString,os::windows::ffi::OsStringExt,path::{Path,PathBuf},ptr::{null,null_mut}};
 use windows::Win32::Foundation::HWND as TypedWindow;
 use windows_sys::Win32::{Foundation::*,Graphics::Gdi::*,System::{Com::*,RemoteDesktop::*,LibraryLoader::GetModuleHandleW,Threading::*},UI::{Controls::WM_MOUSELEAVE,HiDpi::*,Input::KeyboardAndMouse::*,Shell::*,WindowsAndMessaging::*}};
 use ui::wide;
 
 thread_local!{static WINDOW:RefCell<Option<Ui>>=const{RefCell::new(None)};}
 fn with_ui(f:impl FnOnce(&mut Ui)){WINDOW.with(|cell|{if let Ok(mut slot)=cell.try_borrow_mut(){if let Some(ui)=slot.as_mut(){f(ui);}}});}
+// While the workspace is fading, its native controls are clipped. Remember
+// navigation presses on the visible snapshot until the matching release.
+thread_local!{static NAV_PRESS:Cell<HWND>=const{Cell::new(null_mut())};}
 const CLASS:&str="BuddyRustWorkIsland";
 unsafe extern "system" fn editor_proc(hwnd: HWND, message: u32, wp: usize, lp: isize, id: usize, _: usize) -> isize {
     if message==WM_NCDESTROY { RemoveWindowSubclass(hwnd,Some(editor_proc),id); }
@@ -179,15 +182,10 @@ unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
     FADE.with(|f|if let Some(bitmap)=&f.borrow().bitmap{
         // The shared header, border and resize indicator are painted by the host.
         let scale=island::scale_and_limit().0;
-        let pad=(6.0*scale).ceil() as i32;
-        let r=RECT{
-            left:frame.body.left+pad,right:frame.body.right-pad,top:(46.0*scale).round() as i32,
-            bottom:frame.body.bottom-(10.0*scale).round() as i32,
-        };
+        let r=frame.visible_workspace(scale);
         // CSS centers the expanded-width content under the moving header, even
         // for left/right alignment or a compact header with attached cards.
-        let offset=(frame.body.left+frame.body.right-frame.expanded_body.left-frame.expanded_body.right)/2;
-        bitmap.blend(dc,r,alpha,offset);
+        bitmap.blend(dc,r,alpha,frame.workspace_offset());
     });
 }
 unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
@@ -248,14 +246,36 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
             shell::motion_setting_changed(u);
             InvalidateRect(hwnd,null(),0);
         });0},
-        WM_LBUTTONDOWN=>{let(x,y)=local_point(lp);let mut dragged=false;with_ui(|u|dragged=shell::resize_down(u,x,y));if dragged{0}else{DefWindowProcW(hwnd,msg,wp,lp)}},
+        WM_LBUTTONDOWN=>{
+            let(x,y)=local_point(lp);let mut handled=false;
+            with_ui(|u|{
+                handled=shell::resize_down(u,x,y);
+                if !handled && island::frame().animating{
+                    if let Some(child)=u.visible_navigation_at(x,y){
+                        SetCapture(hwnd);NAV_PRESS.set(child);handled=true;
+                    }
+                }
+            });
+            if handled{0}else{DefWindowProcW(hwnd,msg,wp,lp)}
+        },
         WM_MOUSELEAVE=>{with_ui(|u|if u.isolated{shell::pointer_at(u,false,false)}else{shell::visibility(u,false)});0},
         WM_MOUSEMOVE=>{let(x,y)=local_point(lp);
             let mut track=TRACKMOUSEEVENT{cbSize:std::mem::size_of::<TRACKMOUSEEVENT>() as _,dwFlags:TME_LEAVE,hwndTrack:hwnd,dwHoverTime:0};
             TrackMouseEvent(&mut track);
             with_ui(|u|{if !shell::resize_move(u,x,y){let body=island::contains(&island::frame(),x,y);shell::pointer_at(u,body,body);}});0},
-        WM_LBUTTONUP=>{let(x,y)=local_point(lp);with_ui(|u|{if GetCapture()==hwnd{shell::resize_up(u);}else if !u.expanded && island::contains(&island::frame(),x,y){shell::expand(u,true);}});0},
-        WM_CAPTURECHANGED=>{with_ui(shell::resize_up);0},
+        WM_LBUTTONUP=>{
+            let(x,y)=local_point(lp);let pressed=NAV_PRESS.replace(null_mut());
+            if !pressed.is_null(){
+                if GetCapture()==hwnd{ReleaseCapture();}
+                let mut activate=false;
+                with_ui(|u|activate=u.visible_navigation_at(x,y)==Some(pressed));
+                if activate{SetFocus(pressed);PostMessageW(pressed,BM_CLICK,0,0);}
+            }else{
+                with_ui(|u|{if GetCapture()==hwnd{shell::resize_up(u);}else if !u.expanded && island::contains(&island::frame(),x,y){shell::expand(u,true);}});
+            }
+            0
+        },
+        WM_CAPTURECHANGED=>{NAV_PRESS.set(null_mut());with_ui(shell::resize_up);0},
         WM_SETCURSOR=>{let mut p=POINT::default();GetCursorPos(&mut p);ScreenToClient(hwnd,&mut p);if wp==hwnd as usize && shell::resize_grip(p.x,p.y){SetCursor(LoadCursorW(null_mut(),IDC_SIZENS));1}else{DefWindowProcW(hwnd,msg,wp,lp)}},
         WM_ACTIVATE=>{if (wp as u16)as u32==WA_INACTIVE{with_ui(|u|shell::deactivated(u,lp as _));}DefWindowProcW(hwnd,msg,wp,lp)},
         WM_DPICHANGED|WM_DISPLAYCHANGE=>{with_ui(shell::position);0},
@@ -301,7 +321,9 @@ fn run()->Result<(),String>{unsafe{
     let icon=LoadIconW(instance,101usize as _);
     let descriptor=WNDCLASSW{lpfnWndProc:Some(window_proc),hInstance:instance,lpszClassName:class.as_ptr(),hCursor:LoadCursorW(null_mut(),IDC_ARROW),hIcon:if icon.is_null(){LoadIconW(null_mut(),IDI_APPLICATION)}else{icon},hbrBackground:GetSysColorBrush(COLOR_BTNFACE),..Default::default()};
     if RegisterClassW(&descriptor)==0{return Err("Windows could not register the Buddy window.".into())}
-    let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,class.as_ptr(),wide("Buddy Work Rust").as_ptr(),WS_POPUP|WS_CLIPCHILDREN,
+    // Present the parent background and its GDI/Rich Edit child windows as a
+    // single paint during workspace swaps and the hand-off from a fade.
+    let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_COMPOSITED,class.as_ptr(),wide("Buddy Work Rust").as_ptr(),WS_POPUP|WS_CLIPCHILDREN,
         0,0,760,520,null_mut(),null_mut(),instance,null());if hwnd.is_null(){return Err("Windows could not create the Buddy window.".into())}
     let mut ui=Ui::new(TypedWindow(hwnd),profile,isolated)?;SetWindowSubclass(ui.detail_box,Some(editor_proc),1,0);
     for id in [ui::COMPACT,ui::COMPACT_TOOLS]{SetWindowSubclass(GetDlgItem(hwnd,id as i32),Some(compact_proc),2,0);}
@@ -311,6 +333,7 @@ fn run()->Result<(),String>{unsafe{
     WINDOW.with(|s|*s.borrow_mut()=Some(ui));ShowWindow(hwnd,SW_SHOWNOACTIVATE);
     let mut msg=MSG::default();
     while GetMessageW(&mut msg,null_mut(),0,0)>0{
+        chrome::scroll::route_wheel(&mut msg);
         if inline_images::editor_shortcut(&msg)||side_widgets::dialog(&msg){continue}
         if msg.message==WM_KEYDOWN && matches!(msg.wParam as u16,VK_TAB|VK_UP|VK_DOWN|VK_LEFT|VK_RIGHT){chrome::keyboard_navigation(true);}
         if matches!(msg.message,WM_LBUTTONDOWN|WM_RBUTTONDOWN){chrome::keyboard_navigation(false);}

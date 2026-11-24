@@ -9,6 +9,7 @@ mod workspaces_page;
 mod notes_view;
 mod preferences;
 mod scroll_pane;
+pub(crate) use scroll_pane::WheelMotion;
 mod devices_view;
 mod editor_views;
 mod home_media;
@@ -43,7 +44,7 @@ pub(crate) fn window_text(h:Handle,max:usize)->String{
 fn label(h:Handle,s:&str){unsafe{SetWindowTextW(h,wide(s).as_ptr());}}
 fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
 fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->Handle{
-    unsafe{let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());SendMessageW(child,WM_SETFONT,font as usize,1);child}
+    unsafe{let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());chrome::scroll::attach(child,style,class=="COMBOBOX");SendMessageW(child,WM_SETFONT,font as usize,1);child}
 }
 fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
     let mut r=windows_sys::Win32::Foundation::RECT::default();
@@ -126,8 +127,24 @@ impl Ui{
     pub fn set_detail(&self,s:&str){if self.page=="notes"{self.images.set_body(s)}else{label(self.detail_box,s)}}
     pub fn selected(&self)->Option<usize>{let n=unsafe{SendMessageW(self.list,LB_GETCURSEL,0,0)};(n>=0).then_some(n as usize)}
     pub fn select_row(&self,n:usize){unsafe{SendMessageW(self.list,LB_SETCURSEL,n,0);}}
-    pub fn set_rows(&self,rows:&[String]){unsafe{SendMessageW(self.list,WM_SETREDRAW,0,0);SendMessageW(self.list,LB_RESETCONTENT,0,0);for s in rows{SendMessageW(self.list,LB_ADDSTRING,0,wide(s).as_ptr() as isize);}SendMessageW(self.list,WM_SETREDRAW,1,0);InvalidateRect(self.list,std::ptr::null(),1);}}
-    pub fn status(&self,s:&str){label(self.notice,s);}
+    pub fn set_rows(&self, rows: &[String]) {
+        unsafe {
+            // WM_SETREDRAW(TRUE) adds WS_VISIBLE. Background refreshes also use this
+            // list while the current workspace is showing its own cards.
+            let visible = GetWindowLongW(self.list, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+            if visible { SendMessageW(self.list, WM_SETREDRAW, 0, 0); }
+            SendMessageW(self.list, LB_RESETCONTENT, 0, 0);
+            for row in rows { SendMessageW(self.list, LB_ADDSTRING, 0, wide(row).as_ptr() as _); }
+            if visible {
+                SendMessageW(self.list, WM_SETREDRAW, 1, 0);
+                RedrawWindow(self.list, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_FRAME);
+            }
+        }
+    }
+    pub fn status(&self,s:&str){
+        label(self.notice,s);
+        unsafe { RemovePropW(self.notice,windows_sys::w!("BuddyIssue")); }
+    }
     pub fn error(&self,s:&str){label(self.notice,s);unsafe{SetPropW(self.notice,wide("BuddyIssue").as_ptr(),1usize as _);}self.layout();}
     pub fn save(&self)->Result<(),String>{if let Some(e)=&self.read_error{return Err(e.clone())}storage::save(&self.profile,&self.records)}
     pub(crate) fn reorder_navigation(&mut self){
@@ -200,6 +217,7 @@ impl Ui{
     }
     pub(crate) fn apply_appearance(&mut self){
         self.appearance=crate::shell::palette(self);
+        chrome::scroll::set_palette(self.appearance.0);
         let size=(self.scale()*100.0).round() as i32;
         if size!=self.font_size {
             let updated=island_view::fonts(self.scale());
