@@ -49,12 +49,17 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
             let frame=island::frame();
             if (frame.animating || workspace_masked()) && motion_surface::present(hwnd,&frame){
                 island::apply_region(hwnd,&frame);
+                // Widget and tray commands can select a workspace after asking
+                // to expand. Start the clock once that first frame is actually
+                // drawn with the final destination staged.
+                island::first_frame_presented();
                 return
             }
-            let _handoff=motion_surface::hold_last_frame(hwnd);
-            motion_surface::end(hwnd);
+            let _handoff=motion_surface::hold_settled_frame(hwnd,&frame);
             island::apply_region(hwnd,&frame);
+            motion_surface::end(hwnd);
             RedrawWindow(hwnd,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
+            island::first_frame_presented();
         }}
     }
 }
@@ -208,7 +213,8 @@ impl WorkspaceBitmap{
 }
 unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
     let alpha=(frame.body_alpha.clamp(0.0,1.0)*255.0).round() as u8;
-    if alpha==0{return}
+    // Build the snapshot on the first, transparent frame so a cold editor
+    // cannot consume the animation while waiting for the first visible blend.
     let mut bounds=RECT::default();
     if GetClientRect(hwnd,&mut bounds)==0{return}
     let Some(page)=read_ui(|u|u.page) else{return};

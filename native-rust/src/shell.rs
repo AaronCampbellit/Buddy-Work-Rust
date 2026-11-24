@@ -256,9 +256,6 @@ fn change(ui:&mut Ui,open:bool,explicit:bool){
     }
     unsafe{
         if open{SetTimer(ui.hwnd.0,2,50,None);}else{KillTimer(ui.hwnd.0,2);}
-        // Starting the clock before staging the controls can skip the first
-        // several frames, especially with a Rich Edit workspace.
-        island::layout_ready();
         if island::needs_tick(){SetTimer(ui.hwnd.0,MOTION_TIMER,15,None);}else{KillTimer(ui.hwnd.0,MOTION_TIMER);}
         ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);
         if open && explicit{SetForegroundWindow(ui.hwnd.0);}

@@ -46,9 +46,16 @@ impl Surface {
         let pixel_count = b.width as usize * b.height as usize;
         GdiFlush();
         std::slice::from_raw_parts_mut(self.pixels, pixel_count).fill(0);
-        read_ui(|ui| ui.paint_surface(b.dc));
-        composite_workspace(hwnd, b.dc, frame);
-        print_children(hwnd, b.dc, Some(false));
+        if frame.animating || workspace_masked() {
+            read_ui(|ui| ui.paint_surface(b.dc));
+            composite_workspace(hwnd, b.dc, frame);
+            print_children(hwnd, b.dc, Some(false));
+        } else {
+            // The live controls already have their endpoint bounds and content.
+            // A slow first navigation may have presented only the compact frame.
+            read_ui(|ui| ui.paint(b.dc));
+            print_children(hwnd, b.dc, None);
+        }
 
         // GDI paints RGB. Supply alpha from the same geometry used to hit-test
         // the island, clearing anything outside the new silhouette on reversal.
@@ -74,6 +81,14 @@ impl Surface {
     }
 }
 
+unsafe fn take_client_surface(hwnd: HWND) -> Option<Surface> {
+    let mut client=RECT::default();
+    if GetClientRect(hwnd,&mut client)==0 || client.right<1 || client.bottom<1 { return None; }
+    SURFACE.with(|s|s.borrow_mut().take())
+        .filter(|s|s.bitmap.width==client.right && s.bitmap.height==client.bottom)
+        .or_else(||Surface::new(client.right,client.bottom))
+}
+
 pub(super) fn active(hwnd: HWND) -> bool {
     LAYERED.get() == hwnd
 }
@@ -83,21 +98,28 @@ pub(super) fn bitmap_allocated() -> bool {
     SURFACE.with(|surface| surface.borrow().is_some())
 }
 
-// Removing WS_EX_LAYERED allocates a new redirection surface. Keep the last
-// fully painted island above it until Windows has presented the live children.
+// Removing WS_EX_LAYERED allocates a new redirection surface. Cover that
+// transition with the destination page at its real, settled size.
+#[link(name="dwmapi")]
+extern "system" { fn DwmFlush()->i32; }
+
 pub(super) struct Handoff(HWND);
 impl Drop for Handoff {
     fn drop(&mut self) { unsafe {
-        #[link(name="dwmapi")]
-        extern "system" { fn DwmFlush()->i32; }
         GdiFlush();
         DwmFlush();
         DestroyWindow(self.0);
     }}
 }
-pub(super) unsafe fn hold_last_frame(hwnd: HWND) -> Option<Handoff> {
+unsafe fn settled_surface(hwnd: HWND, frame: &island::Frame) -> Option<Surface> {
+    let mut surface=take_client_surface(hwnd)?;
+    surface.draw(hwnd,frame);
+    Some(surface)
+}
+
+pub(super) unsafe fn hold_settled_frame(hwnd: HWND, frame: &island::Frame) -> Option<Handoff> {
     if !active(hwnd) || IsWindowVisible(hwnd)==0 { return None; }
-    let surface=SURFACE.with(|slot|slot.borrow_mut().take())?;
+    let surface=settled_surface(hwnd,frame)?;
     {
         let mut window=RECT::default();
         if GetWindowRect(hwnd,&mut window)==0 { return None; }
@@ -112,6 +134,8 @@ pub(super) unsafe fn hold_last_frame(hwnd: HWND) -> Option<Handoff> {
             DestroyWindow(overlay);return None
         }
         ShowWindow(overlay,SW_SHOWNOACTIVATE);
+        // Commit the overlay before Windows replaces the live window surface.
+        DwmFlush();
         Some(Handoff(overlay))
     }
 }
@@ -125,14 +149,7 @@ pub(super) unsafe fn end(hwnd: HWND) {
 }
 
 pub(super) unsafe fn present(hwnd: HWND, frame: &island::Frame) -> bool {
-    let mut client = RECT::default();
-    GetClientRect(hwnd, &mut client);
-    if client.right < 1 || client.bottom < 1 { return false; }
-
-    let mut buffer = SURFACE.with(|s| s.borrow_mut().take())
-        .filter(|s| s.bitmap.width == client.right && s.bitmap.height == client.bottom)
-        .or_else(|| Surface::new(client.right, client.bottom));
-    let Some(surface) = buffer.as_mut() else { return false; };
+    let Some(mut surface) = take_client_surface(hwnd) else { return false; };
     surface.draw(hwnd, frame);
     if !active(hwnd) {
         let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
@@ -149,11 +166,40 @@ pub(super) unsafe fn present(hwnd: HWND, frame: &island::Frame) -> bool {
         SourceConstantAlpha: 255,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
-    let size = SIZE { cx: client.right, cy: client.bottom };
+    let size = SIZE { cx: surface.bitmap.width, cy: surface.bitmap.height };
     let origin = POINT::default();
     let ok = UpdateLayeredWindow(hwnd, null_mut(), null(), &size, surface.bitmap.dc,
                                  &origin, 0, &alpha, ULW_ALPHA) != 0;
-    SURFACE.with(|s| *s.borrow_mut() = buffer);
+    SURFACE.with(|s| *s.borrow_mut() = Some(surface));
     if !ok { end(hwnd); }
     ok
+}
+
+
+#[cfg(test)]
+pub(super) unsafe fn assert_settled_note_covers_compact_buffer(hwnd: HWND) {
+    let frame=island::frame();
+    assert!(frame.expanded && !frame.animating);
+    assert!(!bitmap_allocated());
+    // A previous monitor or compact transition can supply a smaller DIB.
+    SURFACE.with(|s|*s.borrow_mut()=Surface::new(346,40));
+    let surface=settled_surface(hwnd,&frame).unwrap();
+    let mut client=RECT::default();GetClientRect(hwnd,&mut client);
+    assert_eq!((surface.bitmap.width,surface.bitmap.height),(client.right,client.bottom));
+    let pixels=std::slice::from_raw_parts(surface.pixels,(client.right*client.bottom) as usize);
+    let at=|x:i32,y:i32|pixels[(y*client.right+x) as usize];
+    for x in [frame.body.left+9,frame.body.right-9] {
+        assert_eq!(at(x,42)>>24,255,"the settled cover reaches both edges");
+    }
+    for id in [170,173] {
+        let mut tab=RECT::default();GetWindowRect(GetDlgItem(hwnd,id),&mut tab);
+        let mut pos=POINT{x:tab.left,y:tab.top};ScreenToClient(hwnd,&mut pos);
+        let mut colors=std::collections::HashSet::new();
+        for y in pos.y+4..pos.y+tab.bottom-tab.top-4 {
+            for x in pos.x+12..pos.x+tab.right-tab.left-12 {
+                let pixel=at(x,y);assert_eq!(pixel>>24,255);colors.insert(pixel);
+            }
+        }
+        assert!(colors.len()>8,"the real tab glyph and caption must appear in the settled cover");
+    }
 }

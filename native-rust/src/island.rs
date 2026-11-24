@@ -138,7 +138,7 @@ struct Motion {
     header_from:f32,
     target:f32,
     duration:f32,
-    since:Instant,
+    since:Option<Instant>,
 }
 
 struct Model {
@@ -159,7 +159,8 @@ impl Model {
     }
     fn sample(&mut self, now:Instant) {
         if let Some(m)=self.motion {
-            let ms=now.saturating_duration_since(m.since).as_secs_f32()*1000.0;
+            let Some(since)=m.since else{return};
+            let ms=now.saturating_duration_since(since).as_secs_f32()*1000.0;
             let shape=bezier(ms/m.duration,0.2,0.7,0.2,1.0);
             self.p=m.from+(m.target-m.from)*shape;
             // CSS transitions shorten reversals from the current displayed value.
@@ -185,7 +186,10 @@ impl Model {
             if t>=1.0{self.reveal_since=None;}
         }
     }
-    fn request(&mut self,open:bool,immediate:bool,now:Instant) {
+    fn first_frame_presented(&mut self,now:Instant){
+        if let Some(motion)=self.motion.as_mut(){motion.since.get_or_insert(now);}
+    }
+    fn request(&mut self,open:bool,immediate:bool) {
         // Reverse from the last presented frame. No screen update occurs
         // between the previous timer tick and this input event.
         let target=if open{1.0}else{0.0};
@@ -195,7 +199,7 @@ impl Model {
         }
         if self.expanded==open{return}
         let duration=((if open{220.0}else{180.0})*f32::abs(target-self.p)).max(60.0);
-        self.motion=Some(Motion{from:self.p,alpha_from:self.alpha,header_from:self.header,target,duration,since:now});
+        self.motion=Some(Motion{from:self.p,alpha_from:self.alpha,header_from:self.header,target,duration,since:None});
         self.reveal_since=None;self.widgets_alpha=0;
         self.expanded=open;
     }
@@ -219,12 +223,10 @@ pub fn configure(layout:Layout,expanded:bool){
     });
 }
 pub fn request(open:bool,immediate:bool){
-    MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.request(open,immediate,Instant::now());});
+    MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){m.request(open,immediate);});
 }
-pub fn layout_ready(){
-    MODEL.with(|s|if let Some(motion)=s.borrow_mut().as_mut().and_then(|m|m.motion.as_mut()){
-        motion.since=Instant::now();
-    });
+pub fn first_frame_presented(){
+    MODEL.with(|s|if let Some(model)=s.borrow_mut().as_mut(){model.first_frame_presented(Instant::now());});
 }
 pub fn cards_presented(){
     MODEL.with(|s|if let Some(m)=s.borrow_mut().as_mut(){
@@ -237,8 +239,9 @@ pub fn sample(){
 #[cfg(test)]
 pub fn sample_after(elapsed:std::time::Duration){
     MODEL.with(|s|if let Some(model)=s.borrow_mut().as_mut(){
-        let motion=model.motion.expect("motion capture needs an active transition");
-        model.sample(motion.since+elapsed);
+        model.first_frame_presented(Instant::now());
+        let since=model.motion.and_then(|motion|motion.since).expect("motion capture needs an active transition");
+        model.sample(since+elapsed);
     });
 }
 pub fn needs_tick()->bool{
@@ -338,11 +341,30 @@ mod tests {
     }
 
     #[test]
+    fn cold_destination_setup_does_not_spend_the_opening_transition(){
+        let start=Instant::now();
+        let layout=Layout::new(rect(0,0,1920,1080),96,100,Placement::Center,300,&[]);
+        let mut model=Model::new(layout,false);
+        model.request(true,false);
+        let ready=start+Duration::from_millis(750);
+        model.sample(ready);
+        assert_eq!(model.p,0.0);
+        model.first_frame_presented(ready);
+        model.sample(ready+Duration::from_millis(35));
+        assert!(model.p>0.2 && model.p<0.7);
+        model.first_frame_presented(ready+Duration::from_millis(185));
+        model.sample(ready+Duration::from_millis(220));
+        assert_eq!(model.p,1.0);
+        assert!(!model.needs_tick());
+    }
+
+    #[test]
     fn geometry_and_content_fade_reverse_from_the_displayed_frame() {
         let start=Instant::now();
         let layout=Layout::new(rect(0,0,1920,1080),96,100,Placement::Center,300,&[]);
         let mut model=Model::new(layout,false);
-        model.request(true,false,start);
+        model.request(true,false);
+        model.first_frame_presented(start);
         model.sample(start+Duration::from_millis(30));
         assert!(model.p>0.20 && model.p<0.6);
         assert_eq!(model.alpha,0.);
@@ -350,16 +372,18 @@ mod tests {
         let p=model.p;
         let alpha=model.alpha;
         let before=model.frame().body;
-        model.request(false,false,start+Duration::from_millis(80));
+        model.request(false,false);
+        model.first_frame_presented(start+Duration::from_millis(80));
         assert!(same_rect(before,model.frame().body));
         assert_eq!(model.alpha,alpha);
         assert!((model.motion.unwrap().duration-(180.0*p).max(60.)).abs()<0.05);
         model.sample(start+Duration::from_millis(115));
         assert!(model.p<p && model.alpha<alpha);
-        model.request(true,false,start+Duration::from_millis(115));
+        model.request(true,false);
+        model.first_frame_presented(start+Duration::from_millis(115));
         model.sample(start+Duration::from_millis(400));
         assert_eq!((model.p,model.alpha,model.motion.is_none()),(1.0,1.0,true));
-        model.request(false,true,start+Duration::from_millis(401));
+        model.request(false,true);
         assert_eq!((model.p,model.alpha,model.motion.is_none()),(0.0,0.0,true));
     }
 
@@ -369,20 +393,23 @@ mod tests {
         let at=|ms|start+Duration::from_millis(ms);
         let layout=Layout::new(rect(0,0,1920,1080),96,100,Placement::Center,300,&[Widget::Note]);
         let mut model=Model::new(layout,false);
-        model.request(true,false,start);
+        model.request(true,false);
+        model.first_frame_presented(start);
         model.sample(at(35));
         assert!(model.header>0.0 && model.header<model.p && model.alpha==0.0);
         model.sample(at(220));
-        model.request(false,false,at(220));
+        model.request(false,false);
+        model.first_frame_presented(at(220));
         model.sample(at(399));
         assert!(model.frame().widgets.is_empty());
         model.sample(at(400));
         assert_eq!((model.frame().widgets.len(),model.frame().widgets_alpha),(1,0));
         model.sample(at(450));
         assert!((202..=207).contains(&model.frame().widgets_alpha));
-        model.request(true,false,at(450));
+        model.request(true,false);
+        model.first_frame_presented(at(450));
         assert!(model.frame().widgets.is_empty());
-        model.request(false,true,at(451));
+        model.request(false,true);
         assert_eq!((model.frame().widgets.len(),model.frame().widgets_alpha),(1,255));
         assert!(!model.needs_tick());
     }

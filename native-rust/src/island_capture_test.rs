@@ -279,6 +279,7 @@ fn opening_tab_click_and_reversal_preserve_visible_targets(){
         with_ui(|ui|assert_eq!(ui.page,"home","first present the settled surface"));
         SendMessageW(hwnd,shell::COMMIT_PAGE,0,0);
         with_ui(|ui|assert_eq!((ui.page,ui.pending_page),("notes",None)));
+        motion_surface::assert_settled_note_covers_compact_buffer(hwnd);
         let assert_live=||{
             assert!(!motion_surface::active(hwnd));
             assert!(!motion_surface::bitmap_allocated(),"release the transient compositor bitmap");
