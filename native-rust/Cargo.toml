@@ -1,6 +1,6 @@
 [package]
 name = "buddy-work-native"
-version = "0.1.1-beta.48"
+version = "0.1.1-beta.49"
 edition = "2021"
 publish = false
 default-run = "BuddyRust"
