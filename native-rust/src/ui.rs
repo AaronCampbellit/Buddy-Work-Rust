@@ -12,6 +12,7 @@ mod scroll_pane;
 pub(crate) use scroll_pane::WheelMotion;
 mod devices_view;
 mod editor_views;
+mod editor_navigation;
 mod home_media;
 mod notification_popup;
 use widgets_page::WidgetsPage;
@@ -140,6 +141,8 @@ impl Ui{
         let search_box=child("EDIT","",SEARCH,WS_TABSTOP|ES_AUTOHSCROLL as u32,0);
         unsafe{SendMessageW(search_box,0x1501,0,wide("Search notes").as_ptr() as _);}
         let images=inline_images::Controls::new(hwnd.0)?;
+        editor_navigation::attach(detail_box);
+        editor_navigation::attach(images.editor);
         let buttons=(0..PRIMARY).map(|n|button("",ACTION+n as u16)).collect::<Vec<_>>();
         if [nav,list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
         unsafe {SendMessageW(input_box,EM_SETLIMITTEXT,32768,0);SendMessageW(detail_box,EM_SETLIMITTEXT,256*1024,0);}

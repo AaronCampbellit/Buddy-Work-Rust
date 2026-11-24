@@ -38,6 +38,7 @@ impl EditorViews{
             let style=match id{SOURCE|RESULT=>(ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN)as u32|WS_VSCROLL,PRESET=>ES_AUTOHSCROLL as u32,_=>BS_OWNERDRAW as u32};
             let h=add(ui.hwnd.0,if edit{"EDIT"}else{"BUTTON"},name,id,WS_TABSTOP|style,0,ui.fonts[0]);
             if !edit{chrome::install_button(h)}else{unsafe{SendMessageW(h,EM_SETLIMITTEXT,if id==PRESET{1000}else{256*1024},0);}}
+            if matches!(id,SOURCE|RESULT){editor_navigation::attach(h);}
             controls.push(h);show(h,false);
         }
         let pane=Self{controls,page:Cell::new(""),preset:Cell::new(0),fixed:Cell::new(false),syncing:Cell::new(false)};
