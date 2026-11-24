@@ -46,7 +46,7 @@ impl Surface {
         let pixel_count = b.width as usize * b.height as usize;
         GdiFlush();
         std::slice::from_raw_parts_mut(self.pixels, pixel_count).fill(0);
-        with_ui(|ui| ui.paint_surface(b.dc));
+        read_ui(|ui| ui.paint_surface(b.dc));
         composite_workspace(hwnd, b.dc, frame);
         print_children(hwnd, b.dc, Some(false));
 
@@ -81,6 +81,39 @@ pub(super) fn active(hwnd: HWND) -> bool {
 #[cfg(test)]
 pub(super) fn bitmap_allocated() -> bool {
     SURFACE.with(|surface| surface.borrow().is_some())
+}
+
+// Removing WS_EX_LAYERED allocates a new redirection surface. Keep the last
+// fully painted island above it until Windows has presented the live children.
+pub(super) struct Handoff(HWND);
+impl Drop for Handoff {
+    fn drop(&mut self) { unsafe {
+        #[link(name="dwmapi")]
+        extern "system" { fn DwmFlush()->i32; }
+        GdiFlush();
+        DwmFlush();
+        DestroyWindow(self.0);
+    }}
+}
+pub(super) unsafe fn hold_last_frame(hwnd: HWND) -> Option<Handoff> {
+    if !active(hwnd) || IsWindowVisible(hwnd)==0 { return None; }
+    let surface=SURFACE.with(|slot|slot.borrow_mut().take())?;
+    {
+        let mut window=RECT::default();
+        if GetWindowRect(hwnd,&mut window)==0 { return None; }
+        let destination=POINT{x:window.left,y:window.top};
+        let size=SIZE{cx:surface.bitmap.width,cy:surface.bitmap.height};
+        let overlay=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,
+            windows_sys::w!("STATIC"),null(),WS_POPUP,window.left,window.top,size.cx,size.cy,
+            hwnd,null_mut(),null_mut(),null());
+        if overlay.is_null() { return None; }
+        let alpha=BLENDFUNCTION{BlendOp:AC_SRC_OVER as u8,BlendFlags:0,SourceConstantAlpha:255,AlphaFormat:AC_SRC_ALPHA as u8};
+        if UpdateLayeredWindow(overlay,null_mut(),&destination,&size,surface.bitmap.dc,&POINT::default(),0,&alpha,ULW_ALPHA)==0{
+            DestroyWindow(overlay);return None
+        }
+        ShowWindow(overlay,SW_SHOWNOACTIVATE);
+        Some(Handoff(overlay))
+    }
 }
 
 pub(super) unsafe fn end(hwnd: HWND) {

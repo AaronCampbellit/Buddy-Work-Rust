@@ -21,6 +21,15 @@ use ui::wide;
 
 thread_local!{static WINDOW:RefCell<Option<Ui>>=const{RefCell::new(None)};}
 thread_local!{static FRAME_TO_PRESENT:Cell<HWND>=const{Cell::new(null_mut())};}
+fn read_ui<T>(read:impl FnOnce(&Ui)->T)->Option<T>{
+    WINDOW.with(|cell|{let slot=cell.try_borrow().ok()?;slot.as_ref().map(read)})
+}
+thread_local!{static DEFERRED_PAINT:Cell<HWND>=const{Cell::new(null_mut())};}
+fn repaint_after_update(hwnd: HWND) {
+    if WINDOW.with(|cell| cell.try_borrow().is_err()) {
+        DEFERRED_PAINT.set(hwnd);
+    }
+}
 fn with_ui(f:impl FnOnce(&mut Ui)){
     let completed=WINDOW.with(|cell|{
         let Ok(mut slot)=cell.try_borrow_mut() else{return false};
@@ -28,7 +37,11 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
         true
     });
     if completed{
+        let repair=DEFERRED_PAINT.replace(null_mut());
         let hwnd=FRAME_TO_PRESENT.replace(null_mut());
+        if hwnd.is_null() && !repair.is_null(){unsafe{
+            RedrawWindow(repair,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
+        }}
         if !hwnd.is_null(){unsafe{
             // Moving children or changing their regions can synchronously paint
             // while layout owns Ui. Present the complete new geometry only
@@ -38,6 +51,7 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
                 island::apply_region(hwnd,&frame);
                 return
             }
+            let _handoff=motion_surface::hold_last_frame(hwnd);
             motion_surface::end(hwnd);
             island::apply_region(hwnd,&frame);
             RedrawWindow(hwnd,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
@@ -175,13 +189,12 @@ impl WorkspaceBitmap{
     unsafe fn capture(hwnd:HWND,reference:HDC,width:i32,height:i32,page:&'static str)->Option<Self>{
         let bitmap=Self::allocate(reference,width,height,page)?;
         let dc=bitmap.dc;
-        let mut painted=false;
-        with_ui(|u|{
+        let painted=read_ui(|u|{
             SetDCBrushColor(dc,u.appearance.0);
             FillRect(dc,&RECT{left:0,top:0,right:width,bottom:height},GetStockObject(DC_BRUSH));
-            u.paint_workspace(dc);painted=true;
+            u.paint_workspace(dc);
         });
-        if !painted{return None}
+        painted?;
         print_children(hwnd,dc,Some(true));
         Some(bitmap)
     }
@@ -198,9 +211,7 @@ unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
     if alpha==0{return}
     let mut bounds=RECT::default();
     if GetClientRect(hwnd,&mut bounds)==0{return}
-    let mut page=None;
-    with_ui(|u|page=Some(u.page));
-    let Some(page)=page else{return};
+    let Some(page)=read_ui(|u|u.page) else{return};
     let fresh=FADE.with(|f|{
         let s=f.borrow();!s.bitmap.as_ref().is_some_and(|b|b.width==bounds.right&&b.height==bounds.bottom&&b.page==page)
     });
@@ -220,7 +231,7 @@ unsafe fn composite_workspace(hwnd:HWND,dc:HDC,frame:&island::Frame){
 unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
     // Synchronous WM_PAINT during child layout cannot obtain a coherent
     // surface or enter owner-draw handlers. The outer layout invalidates again.
-    if WINDOW.with(|s|s.try_borrow().is_err()){return}
+    if WINDOW.with(|s|s.try_borrow().is_err()){DEFERRED_PAINT.set(hwnd);return}
     let saved=SaveDC(dc);
     let mask=CreateRectRgn(0,0,0,0);
     if !mask.is_null(){if GetWindowRgn(hwnd,mask)>0{ExtSelectClipRgn(dc,mask,RGN_AND);}DeleteObject(mask);}
@@ -233,7 +244,7 @@ unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
             .filter(|b|b.width==client.right && b.height==client.bottom)
             .or_else(||WorkspaceBitmap::allocate(dc,client.right,client.bottom,""));
         let target=buffer.as_ref().map_or(dc,|b|b.dc);
-        with_ui(|u|u.paint_surface(target));
+        read_ui(|u|u.paint_surface(target));
         composite_workspace(hwnd,target,&frame);
         if children{print_children(hwnd,target,Some(false));}
         if let Some(buffer)=buffer{
@@ -242,7 +253,7 @@ unsafe fn paint_to(hwnd:HWND,dc:HDC,children:bool){
             FADE.with(|f|f.borrow_mut().frame_buffer=Some(buffer));
         }
     }else{
-        with_ui(|u|u.paint(dc));
+        read_ui(|u|u.paint(dc));
         if children{print_children(hwnd,dc,None);}
     }
     RestoreDC(dc,saved);
@@ -271,8 +282,19 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         },
         WM_PAINT=>{let mut ps=PAINTSTRUCT::default();let dc=BeginPaint(hwnd,&mut ps);if !dc.is_null() && !motion_surface::active(hwnd){paint_to(hwnd,dc,false);}EndPaint(hwnd,&ps);0},
         WM_PRINT|WM_PRINTCLIENT=>{if wp!=0{paint_to(hwnd,wp as HDC,lp as i32&PRF_CHILDREN!=0);}0},
-        WM_DRAWITEM=>{let mut drawn=false;with_ui(|u|drawn=u.draw_item(lp));if drawn{1}else{DefWindowProcW(hwnd,msg,wp,lp)}},
-        WM_CTLCOLORSTATIC|WM_CTLCOLORLISTBOX|WM_CTLCOLOREDIT=>{let mut brush=0;with_ui(|u|brush=u.color(msg,wp as _,lp as _));if brush!=0{brush}else{DefWindowProcW(hwnd,msg,wp,lp)}},
+        WM_DRAWITEM=>match read_ui(|u|u.draw_item(lp)){
+            Some(true)=>1,
+            None if lp!=0=>{
+                // The native button may synchronously request a draw while
+                // navigation owns Ui. Repaint after the outer operation.
+                DEFERRED_PAINT.set(hwnd);1
+            }
+            _=>DefWindowProcW(hwnd,msg,wp,lp)
+        },
+        WM_CTLCOLORSTATIC|WM_CTLCOLORBTN|WM_CTLCOLORLISTBOX|WM_CTLCOLOREDIT=>{
+            let brush=ui::control_brush(hwnd,msg,wp as _,lp as _);
+            if brush!=0{brush}else{DefWindowProcW(hwnd,msg,wp,lp)}
+        },
         WM_ERASEBKGND=>1,
         WM_SETTINGCHANGE|WM_THEMECHANGED=>{with_ui(|u|{
             u.apply_appearance();
@@ -312,7 +334,7 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         WM_SETCURSOR=>{let mut p=POINT::default();GetCursorPos(&mut p);ScreenToClient(hwnd,&mut p);if wp==hwnd as usize && shell::resize_grip(p.x,p.y){SetCursor(LoadCursorW(null_mut(),IDC_SIZENS));1}else{DefWindowProcW(hwnd,msg,wp,lp)}},
         WM_ACTIVATE=>{if (wp as u16)as u32==WA_INACTIVE{with_ui(|u|shell::deactivated(u,lp as _));}DefWindowProcW(hwnd,msg,wp,lp)},
         WM_DPICHANGED|WM_DISPLAYCHANGE=>{with_ui(shell::position);0},
-        WM_CONTEXTMENU=>{with_ui(shell::menu);0},
+        WM_CONTEXTMENU=>{with_ui(|ui|shell::context_menu(ui,wp as HWND,lp));0},
         shell::CALLBACK=>{if lp as u32==WM_RBUTTONUP{with_ui(shell::menu);}else if lp as u32==WM_LBUTTONUP{with_ui(|u|shell::expand(u,true));}else if lp as u32==NIN_BALLOONUSERCLICK{with_ui(|u|{if let Some(id)=u.due_note.clone(){u.active_note=Some(id);shell::expand(u,true);u.navigate("notes");}});}0},
         shell::REVEAL|WM_HOTKEY=>{with_ui(|u|shell::expand(u,if msg==shell::REVEAL{true}else{!u.expanded}));0},
         WM_DROPFILES=>{let h=wp as HDROP;let count=DragQueryFileW(h,0xffffffff,null_mut(),0).min(128);let mut paths=Vec::new();for i in 0..count{let n=DragQueryFileW(h,i,null_mut(),0);if n>32767{continue}let mut buffer=vec![0;n as usize+1];let len=DragQueryFileW(h,i,buffer.as_mut_ptr(),buffer.len() as _);if len>0{paths.push(PathBuf::from(OsString::from_wide(&buffer[..len as usize])));}}DragFinish(h);with_ui(|u|{if u.dirty_note{if let Err(reason)=core::save_note(u){u.status(&reason);return}}shell::expand(u,true);let message=workspace::drop_files(u,paths).unwrap_or_else(|e|e);u.status(&message);});0},
@@ -352,7 +374,7 @@ fn run()->Result<(),String>{unsafe{
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     let com=CoInitializeEx(null(),COINIT_APARTMENTTHREADED as u32);if com<0{return Err(format!("Windows COM initialization failed ({com:#x})."))}
     let icon=LoadIconW(instance,101usize as _);
-    let descriptor=WNDCLASSW{lpfnWndProc:Some(window_proc),hInstance:instance,lpszClassName:class.as_ptr(),hCursor:LoadCursorW(null_mut(),IDC_ARROW),hIcon:if icon.is_null(){LoadIconW(null_mut(),IDI_APPLICATION)}else{icon},hbrBackground:GetSysColorBrush(COLOR_BTNFACE),..Default::default()};
+    let descriptor=WNDCLASSW{lpfnWndProc:Some(window_proc),hInstance:instance,lpszClassName:class.as_ptr(),hCursor:LoadCursorW(null_mut(),IDC_ARROW),hIcon:if icon.is_null(){LoadIconW(null_mut(),IDI_APPLICATION)}else{icon},hbrBackground:null_mut(),..Default::default()};
     if RegisterClassW(&descriptor)==0{return Err("Windows could not register the Buddy window.".into())}
     // Present the parent background and its GDI/Rich Edit child windows as a
     // single paint during workspace swaps and the hand-off from a fade.

@@ -53,12 +53,14 @@ const EXTRA:&[(usize,&str)]=&[(11,"Undo"),(12,"Redo"),(13,"Delete annotation"),(
 fn create_child(h:HWND,e:&Editor,class:&str,name:&str,id:usize,flags:u32)->HWND{unsafe{
     let child=CreateWindowExW(0,platform::wide(class).as_ptr(),platform::wide(name).as_ptr(),WS_CHILD|WS_TABSTOP|flags,0,0,1,1,h,id as _,GetModuleHandleW(null()),null());
     chrome::scroll::attach(child,flags,false);
+    if class == "EDIT" { chrome::edit_menu::attach(child); }
     SendMessageW(child,WM_SETFONT,e.chrome.fonts[0]as _,0);
     if class=="BUTTON"{chrome::install_button(child);}
     child
 }}
 pub(super) unsafe fn create(h:HWND,e:&mut Editor){
     chrome::scroll::set_palette(e.chrome.overlay.colors.0);
+    chrome::menu::set_colors(e.chrome.overlay.colors);
     for(i,(_,name))in TOOLS.iter().enumerate(){create_child(h,e,"BUTTON",name,100+i,BS_OWNERDRAW as u32);}
     for(i,name)in["Red","Blue","Yellow","Green","White","Black"].into_iter().enumerate(){create_child(h,e,"BUTTON",name,200+i,BS_OWNERDRAW as u32);}
     for &(id,name)in EXTRA{create_child(h,e,"BUTTON",name,id,BS_OWNERDRAW as u32);}
@@ -161,11 +163,11 @@ pub(super) unsafe fn draw(_h:HWND,e:&Editor,d:&DRAWITEMSTRUCT){
     }else{text(d.hDC,r,&name,c.fonts[1],fg,CENTER);}
 }
 
-unsafe fn menu(h:HWND,anchor:i32,items:&[(usize,String)])->Option<usize>{
+unsafe fn menu(h:HWND,colors:chrome::Colors,anchor:i32,items:&[(usize,String)])->Option<usize>{
     let m=CreatePopupMenu();if m.is_null(){return None}
     for (id,label)in items{AppendMenuW(m,MF_STRING,*id,platform::wide(label).as_ptr());}
     let mut r=RECT::default();GetWindowRect(GetDlgItem(h,anchor),&mut r);
-    let choice=TrackPopupMenu(m,TPM_RETURNCMD|TPM_NONOTIFY,r.left,r.bottom,0,h,null());DestroyMenu(m);(choice>0).then_some(choice as usize)
+    let choice=chrome::menu::track(h,m,TPM_RETURNCMD|TPM_NONOTIFY,r.left,r.bottom,colors);DestroyMenu(m);(choice>0).then_some(choice as usize)
 }
 pub(super) unsafe fn clip_history(e:&Editor,dc:HDC,client:RECT){
     if e.chrome.history{ExcludeClipRect(dc,client.right-e.chrome.px(232),e.chrome.px(82),client.right-e.chrome.px(7),client.bottom-e.chrome.px(34));}
@@ -209,12 +211,12 @@ pub(super) unsafe fn command(h:HWND,e:&mut Editor,id:usize)->Result<(),String>{
         406=>super::command(h,e,13)?,
         420=>e.width=(e.width-1).max(1),421=>e.width=(e.width+1).min(24),
         422=>e.chrome.opacity=(e.chrome.opacity-5).max(10),423=>e.chrome.opacity=(e.chrome.opacity+5).min(100),
-        424=>{let items=[10,12,14,16,18,20,24,28,32,36,48,60,72,96].map(|v|(500+v,format!("{v} px")));if let Some(n)=menu(h,424,&items){e.chrome.font_size=(n-500)as i32;}}
+        424=>{let items=[10,12,14,16,18,20,24,28,32,36,48,60,72,96].map(|v|(500+v,format!("{v} px")));if let Some(n)=menu(h,e.chrome.overlay.colors,424,&items){e.chrome.font_size=(n-500)as i32;}}
         425=>{
             let mut items=TOOLS.iter().enumerate().map(|(i,(_,s))|(100+i,s.to_string())).collect::<Vec<_>>();
             items.extend([(420,"Thinner line".into()),(421,"Thicker line".into()),(422,"Decrease opacity".into()),(423,"Increase opacity".into()),(424,"Font size".into()),(3,"Show original / edits".into()),(4,"Save original PNG".into()),
                 (303,"Pan left".into()),(304,"Pan right".into()),(305,"Pan up".into()),(306,"Pan down".into())]);
-            if let Some(action)=menu(h,425,&items){super::command(h,e,action)?;}
+            if let Some(action)=menu(h,e.chrome.overlay.colors,425,&items){super::command(h,e,action)?;}
         }
         440|441=>{
             let Some(p)=e.chrome.text_point.take()else{return Ok(())};

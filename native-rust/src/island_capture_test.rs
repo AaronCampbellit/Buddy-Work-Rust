@@ -219,6 +219,24 @@ fn opening_tab_click_and_reversal_preserve_visible_targets(){
     if supplied.is_none(){seed_profiles(&fixtures);}
     workspace::with_private_test_desktop(||unsafe{
         let hwnd=create_app(&fixtures.join("fixture-empty"),false,&[]);
+        // SetWindowText, ShowWindow and focus changes synchronously ask the
+        // parent for brushes while navigation still holds the mutable Ui.
+        with_ui(|ui|{
+            let dc=CreateCompatibleDC(null_mut());
+            for theme in ["dark","light"]{
+                core::set(ui,"theme",theme);
+                ui.apply_appearance();
+                for (message,child,color) in [
+                    (WM_CTLCOLORBTN,GetDlgItem(hwnd,170),ui.appearance.0),
+                    (WM_CTLCOLORSTATIC,ui.hwnd.0,ui.appearance.0),
+                    (WM_CTLCOLOREDIT,ui.input_box,chrome::control(ui.appearance)),
+                ]{
+                    assert_eq!(SendMessageW(hwnd,message,dc as usize,child as isize),GetStockObject(DC_BRUSH) as isize);
+                    assert_eq!(GetBkColor(dc),color,"workspace brush during a {theme} navigation");
+                }
+            }
+            DeleteDC(dc);
+        });
         let left=|id|{
             let mut rect=RECT::default();GetWindowRect(GetDlgItem(hwnd,id),&mut rect);rect.left
         };

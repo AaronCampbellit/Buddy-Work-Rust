@@ -327,9 +327,39 @@ pub fn tray(ui:&Ui,create:bool){if ui.isolated{return}let mut n=tray_data(ui);un
 }}
 pub fn balloon(ui:&Ui,title:&str,body:&str){if ui.isolated{return}let mut n=tray_data(ui);n.uFlags=NIF_INFO;n.dwInfoFlags=NIIF_INFO;
     for (slot,ch) in n.szInfoTitle.iter_mut().take(63).zip(title.encode_utf16()){*slot=ch;}for (slot,ch) in n.szInfo.iter_mut().take(255).zip(body.encode_utf16()){*slot=ch;}unsafe{Shell_NotifyIconW(NIM_MODIFY,&n);}}
-pub fn menu(ui:&mut Ui){unsafe{
+pub fn menu(ui:&mut Ui){
+    let mut point=POINT::default();
+    unsafe { GetCursorPos(&mut point); }
+    show_menu(ui,point);
+}
+
+pub fn context_menu(ui:&mut Ui, target:HWND, position:isize){
+    let point=if position != -1 {
+        POINT{x:position as i16 as i32,y:(position >> 16) as i16 as i32}
+    }else{unsafe{
+        let focus=GetFocus();
+        let anchor=if IsChild(ui.hwnd.0,focus)!=0 {focus} else {target};
+        let mut bounds=RECT::default();
+        if IsChild(ui.hwnd.0,anchor)!=0 && IsWindowVisible(anchor)!=0 && GetWindowRect(anchor,&mut bounds)!=0 {
+            POINT{x:bounds.left,y:bounds.bottom}
+        }else{
+            let body=island::frame().body;
+            let header_height=(40.0*island::scale_and_limit().0).round() as i32;
+            let mut point=POINT{x:(body.left+body.right)/2,y:body.bottom.min(header_height)};
+            ClientToScreen(ui.hwnd.0,&mut point);
+            point
+        }
+    }};
+    show_menu(ui,point);
+}
+
+fn show_menu(ui:&mut Ui,mouse:POINT){unsafe{
     const FIRST_WORKSPACE: i32 = 100;
-    let m=CreatePopupMenu();if m.is_null(){return}let items=[(1,"Open Buddy"),(2,"Settings"),(3,if ui.paused{"Resume services"}else{"Pause services"}),(4,"Hide temporarily"),(5,"Next display"),(6,"Updates and diagnostics"),(7,"Quit Buddy")];for (id,name) in items{AppendMenuW(m,MF_STRING,id,wide(name).as_ptr());}
+    let m=CreatePopupMenu();
+    if m.is_null(){return}
+    let item=|id, label:&str| { AppendMenuW(m,MF_STRING,id,wide(label).as_ptr()); };
+    let divider=|| { AppendMenuW(m,MF_SEPARATOR,0,null()); };
+    item(1,"Open Buddy");
     if !ui.paused && !ui.locked && !ui.suppressed {
         let pages = CreatePopupMenu();
         if !pages.is_null() {
@@ -342,31 +372,40 @@ pub fn menu(ui:&mut Ui){unsafe{
             }
         }
     }
+    item(2,"Settings");
+    item(6,"Updates and diagnostics");
+    divider();
+    let pinned=INTERACTION.with(|i|i.borrow().pinned);
+    AppendMenuW(m,MF_STRING|if pinned{MF_CHECKED}else{0},8,wide("Pin island open").as_ptr());
+    item(4,"Hide temporarily");
+    item(5,"Next display");
+
+    let mut shortcuts=Vec::new();
     if core::due_title(ui).is_some(){
-        for(id,name)in [(30,"Open reminder"),(31,"Snooze reminder 5 minutes"),(32,"Dismiss reminder")]{AppendMenuW(m,MF_STRING,id,wide(name).as_ptr());}
+        shortcuts.extend([(30,"Open reminder"),(31,"Snooze reminder 5 minutes"),(32,"Dismiss reminder")]);
     }
     if core::setting(ui,"widgets","on")=="on" {
-        if core::widget_enabled(ui,"pomWidget","pomEnd"){AppendMenuW(m,MF_STRING,20,wide("Start / pause focus timer").as_ptr());}
+        if core::widget_enabled(ui,"pomWidget","pomEnd"){shortcuts.push((20,"Start / pause focus timer"));}
         if core::widget_enabled(ui,"watchWidget","watchStart"){
-            AppendMenuW(m,MF_STRING,21,wide("Start / pause stopwatch").as_ptr());
-            AppendMenuW(m,MF_STRING,22,wide("Record stopwatch lap").as_ptr());
+            shortcuts.extend([(21,"Start / pause stopwatch"),(22,"Record stopwatch lap")]);
         }
-        if !core::setting(ui,"noteWidget","").is_empty(){AppendMenuW(m,MF_STRING,23,wide("Open pinned note").as_ptr());}
+        if !core::setting(ui,"noteWidget","").is_empty(){shortcuts.push((23,"Open pinned note"));}
         if !crate::workspace::widget_text(ui).is_empty(){
-            AppendMenuW(m,MF_STRING,24,wide("Open pinned clipboard item").as_ptr());
-            AppendMenuW(m,MF_STRING,25,wide("Copy pinned clipboard item").as_ptr());
+            shortcuts.extend([(24,"Open pinned clipboard item"),(25,"Copy pinned clipboard item")]);
         }
     }
     if ui.call_state.is_some() && !ui.paused && !ui.suppressed && !ui.locked {
-        AppendMenuW(m,MF_SEPARATOR,0,null());
-        for (id,name) in [(10,"Freeze camera"),(11,"Resume camera"),(12,"Standby camera")] {
-            AppendMenuW(m,MF_STRING,id,wide(name).as_ptr());
-        }
+        shortcuts.extend([(10,"Freeze camera"),(11,"Resume camera"),(12,"Standby camera")]);
     }
-    let pinned=INTERACTION.with(|i|i.borrow().pinned);
-    AppendMenuW(m,MF_STRING|if pinned{MF_CHECKED}else{0},8,wide("Pin island open").as_ptr());
-    let mut mouse=POINT::default();GetCursorPos(&mut mouse);SetForegroundWindow(ui.hwnd.0);
-    let cmd=TrackPopupMenu(m,TPM_RETURNCMD|TPM_RIGHTBUTTON,mouse.x,mouse.y,0,ui.hwnd.0,null());DestroyMenu(m);
+    if !shortcuts.is_empty(){
+        divider();
+        for (id,label) in shortcuts { item(id,label); }
+    }
+    divider();
+    item(3,if ui.paused{"Resume services"}else{"Pause services"});
+    item(7,"Quit Buddy");
+    SetForegroundWindow(ui.hwnd.0);
+    let cmd=crate::chrome::menu::track(ui.hwnd.0,m,TPM_RETURNCMD|TPM_RIGHTBUTTON,mouse.x,mouse.y,ui.appearance);DestroyMenu(m);
     match cmd{1=>{ui.paused=false;expand(ui,true);},2=>{ui.paused=false;expand(ui,true);ui.navigate("settings");},3=>{ui.paused=!ui.paused;if ui.paused{devices::stop();crate::activity::stop();ShowWindow(ui.hwnd.0,SW_HIDE);}else{if !ui.isolated{devices::restore(&ui.profile);}ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);}side_widgets::sync(ui);core::tick(ui);},
         4=>hide_temporarily(ui),5=>{let _=core::action(ui,"settings","display");},6=>{expand(ui,true);ui.navigate("diagnostics")},7=>{ui.quitting=true;PostMessageW(ui.hwnd.0,WM_CLOSE,0,0);},8=>{let pin=INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=!i.pinned;i.pinned});if pin{expand(ui,true);}},10..=12 if !ui.paused && !ui.suppressed && !ui.locked=>{
             let key=match cmd{10=>"freeze",11=>"resume",_=>"standby"};
@@ -525,7 +564,11 @@ fn dialog<T>(ui:&Ui,title:&str,caption:&str,build:impl FnOnce(HWND)->HWND,accept
     SetForegroundWindow(ui.hwnd.0);value
 }}
 pub fn prompt(ui:&Ui,title:&str,caption:&str,initial:&str)->Option<String>{
-    dialog(ui,title,caption,|owner|unsafe{CreateWindowExW(WS_EX_CLIENTEDGE,wide("EDIT").as_ptr(),wide(initial).as_ptr(),WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_AUTOHSCROLL as u32,12,36,348,25,owner,10usize as _,null_mut(),null())},
+    dialog(ui,title,caption,|owner|unsafe{
+        let edit=CreateWindowExW(WS_EX_CLIENTEDGE,wide("EDIT").as_ptr(),wide(initial).as_ptr(),WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_AUTOHSCROLL as u32,12,36,348,25,owner,10usize as _,null_mut(),null());
+        crate::chrome::edit_menu::attach(edit);
+        edit
+    },
         |edit|Ok(crate::ui::window_text(edit,32768)))
 }
 pub fn choice(ui:&Ui,title:&str,caption:&str,items:&[String])->Option<usize>{

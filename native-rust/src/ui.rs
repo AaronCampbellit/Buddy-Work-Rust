@@ -44,7 +44,13 @@ pub(crate) fn window_text(h:Handle,max:usize)->String{
 fn label(h:Handle,s:&str){unsafe{SetWindowTextW(h,wide(s).as_ptr());}}
 fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
 fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->Handle{
-    unsafe{let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());chrome::scroll::attach(child,style,class=="COMBOBOX");SendMessageW(child,WM_SETFONT,font as usize,1);child}
+    unsafe {
+        let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());
+        chrome::scroll::attach(child,style,class=="COMBOBOX");
+        if class == "EDIT" { chrome::edit_menu::attach(child); }
+        SendMessageW(child,WM_SETFONT,font as usize,1);
+        child
+    }
 }
 fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
     let mut r=windows_sys::Win32::Foundation::RECT::default();
@@ -55,6 +61,30 @@ fn pos(h:Handle,x:i32,y:i32,w:i32,ht:i32){unsafe{
         SetWindowPos(h,std::ptr::null_mut(),x,y,w.max(1),ht.max(1),SWP_NOACTIVATE|SWP_NOZORDER);
     }
 }}
+// Win32 asks for these brushes synchronously while a workspace switch is
+// modifying Ui. The small paint state lives independently of that borrow.
+#[derive(Clone, Copy)]
+struct ControlPaint {
+    owner: Handle,
+    title: Handle,
+    list: Handle,
+    colors: chrome::Colors,
+}
+thread_local! {
+    static NATIVE_COLORS: std::cell::Cell<Option<ControlPaint>> = const { std::cell::Cell::new(None) };
+}
+pub(crate) unsafe fn control_brush(hwnd: Handle, msg: u32, dc: HDC, child: Handle) -> isize {
+    let Some(paint) = NATIVE_COLORS.get().filter(|p| p.owner == hwnd) else { return 0; };
+    let (background, field, text, accent) = paint.colors;
+    let base = if matches!(GetDlgCtrlID(child), 3305 | 3306) { field }
+        else if msg == WM_CTLCOLOREDIT { chrome::control(paint.colors) }
+        else if msg == WM_CTLCOLORLISTBOX && child != paint.list { field }
+        else { background };
+    SetBkColor(dc, base);
+    SetTextColor(dc, if child == paint.title { accent } else { text });
+    SetDCBrushColor(dc, base);
+    GetStockObject(DC_BRUSH) as isize
+}
 pub struct Ui {
     pub hwnd:HWND,pub profile:PathBuf,pub records:storage::Records,pub page:&'static str,pub isolated:bool,
     pub(crate) pending_page:Option<&'static str>,
@@ -196,6 +226,7 @@ impl Ui{
         if page=="notes" && window_text(self.search_box,32768)!=self.search {label(self.search_box,&self.search);}
         self.status(&self.read_error.clone().unwrap_or(message));
         self.layout();
+        crate::repaint_after_update(self.hwnd.0);
     }
     pub(crate) fn run_action(&mut self,key:&str){
         let page=self.page;
@@ -231,7 +262,9 @@ impl Ui{
     }
     pub(crate) fn apply_appearance(&mut self){
         self.appearance=crate::shell::palette(self);
+        NATIVE_COLORS.set(Some(ControlPaint { owner: self.hwnd.0, title: self.title, list: self.list, colors: self.appearance }));
         chrome::scroll::set_palette(self.appearance.0);
+        chrome::menu::set_colors(self.appearance);
         let size=(self.scale()*100.0).round() as i32;
         if size!=self.font_size {
             let updated=island_view::fonts(self.scale());
@@ -246,15 +279,14 @@ impl Ui{
         }
         unsafe{RedrawWindow(self.hwnd.0,std::ptr::null(),std::ptr::null_mut(),RDW_ALLCHILDREN|RDW_ERASE|RDW_INVALIDATE);}
     }
-    pub(crate) unsafe fn color(&self,msg:u32,dc:HDC,child:Handle)->isize{
-        let (bg,field,text,accent)=self.appearance;
-        let base=if matches!(GetDlgCtrlID(child),3305|3306){field}else if msg==WM_CTLCOLOREDIT{chrome::control(self.appearance)}else if msg==WM_CTLCOLORLISTBOX && child!=self.list{field}else{bg};
-        SetBkColor(dc,base);SetTextColor(dc,if child==self.title{accent}else{text});SetDCBrushColor(dc,base);
-        GetStockObject(DC_BRUSH) as isize
-    }
     pub(crate) fn compact_label(&self,s:&str){
         if window_text(self.compact,1024)!=s {label(self.compact,s);}
         unsafe{InvalidateRect(self.hwnd.0,std::ptr::null(),0);}
     }
 }
-impl Drop for Ui{fn drop(&mut self){for font in self.fonts.drain(..){unsafe{DeleteObject(font);}}}}
+impl Drop for Ui {
+    fn drop(&mut self) {
+        if NATIVE_COLORS.get().is_some_and(|paint| paint.owner==self.hwnd.0) { NATIVE_COLORS.set(None); }
+        for font in self.fonts.drain(..) { unsafe { DeleteObject(font); } }
+    }
+}

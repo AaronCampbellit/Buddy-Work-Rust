@@ -7,6 +7,8 @@ use windows_sys::Win32::{
 };
 use crate::ui::wide;
 mod text;
+pub(crate) mod menu;
+pub(crate) mod edit_menu;
 pub(crate) mod scroll;
 
 pub type Colors=(u32,u32,u32,u32);
@@ -56,6 +58,8 @@ unsafe extern "system" fn button_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize,id:usi
         }
     }
     match msg {
+        // Every owner-drawn button fills its complete client rectangle.
+        WM_ERASEBKGND=>return 1,
         WM_LBUTTONDOWN|WM_LBUTTONDBLCLK=>keyboard_navigation(false),
         WM_MOUSEMOVE if !hovered(hwnd)=>{
             HOVERED.with(|v|{let old=v.replace(hwnd);if !old.is_null(){InvalidateRect(old,null(),0);}});

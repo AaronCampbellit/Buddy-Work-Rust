@@ -584,7 +584,7 @@ unsafe extern "system" fn note_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:usize
                 AppendMenuW(menu,MF_SEPARATOR,0,null());AppendMenuW(menu,MF_STRING,OPEN as _,wide("Open image in markup").as_ptr());
                 AppendMenuW(menu,MF_STRING,REMOVE as _,wide("Remove image").as_ptr());
             }
-            let choice=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,0,h,null())as u32;
+            let choice=crate::chrome::menu::track(h,menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,crate::chrome::menu::colors())as u32;
             DestroyMenu(menu);match choice{
                 WM_CUT|WM_COPY|WM_PASTE=>{SendMessageW(h,choice,0,0);}
                 EM_SETSEL_=>select(h,0,usize::MAX),

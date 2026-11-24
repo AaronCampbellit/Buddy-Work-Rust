@@ -157,7 +157,7 @@ unsafe extern "system" fn viewport(hwnd: Handle, msg: u32, wp: usize, lp: isize,
             };
             state.scroll(hwnd,next);0
         }
-        WM_COMMAND|WM_DRAWITEM|WM_CTLCOLORSTATIC|WM_CTLCOLORLISTBOX|WM_CTLCOLOREDIT => SendMessageW(GetParent(hwnd),msg,wp,lp),
+        WM_COMMAND|WM_DRAWITEM|WM_CTLCOLORBTN|WM_CTLCOLORSTATIC|WM_CTLCOLORLISTBOX|WM_CTLCOLOREDIT => SendMessageW(GetParent(hwnd),msg,wp,lp),
         WM_NCDESTROY => {RemoveWindowSubclass(hwnd,Some(viewport),id);DefSubclassProc(hwnd,msg,wp,lp)}
         _ => DefSubclassProc(hwnd,msg,wp,lp),
     }

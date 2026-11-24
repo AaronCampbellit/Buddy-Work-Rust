@@ -34,7 +34,7 @@ impl Ui {
         let menu=CreatePopupMenu();if menu.is_null(){return None}
         for (index,label) in labels.iter().enumerate(){AppendMenuW(menu,MF_STRING,index+1,wide(&label.replace('&',"&&")).as_ptr());}
         let mut r=RECT::default();GetWindowRect(anchor,&mut r);
-        let choice=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN,r.left,r.bottom,0,self.hwnd.0,std::ptr::null());
+        let choice=chrome::menu::track(self.hwnd.0,menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN,r.left,r.bottom,self.appearance);
         DestroyMenu(menu);(choice>0).then(||(choice-1) as usize)
     }}
     fn related(&self)->&'static [&'static str] {match self.page{

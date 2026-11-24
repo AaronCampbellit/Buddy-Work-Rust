@@ -162,7 +162,9 @@ unsafe fn classes()->bool {
 }
 unsafe fn child(parent:HWND,class:&str,label:&str,id:u16,styles:u32,ex:u32)->HWND{
     let h=CreateWindowExW(ex,wide(class).as_ptr(),wide(label).as_ptr(),WS_CHILD|styles,0,0,1,1,parent,id as usize as _,GetModuleHandleW(null()),null());
-    crate::chrome::scroll::attach(h,styles,false);h
+    crate::chrome::scroll::attach(h,styles,false);
+    if class == "EDIT" { crate::chrome::edit_menu::attach(h); }
+    h
 }
 fn font(size:i32,weight:i32)->HFONT{
     let mut l=LOGFONTW::default();l.lfHeight= -size;l.lfWeight=weight;let name=wide("Segoe UI");l.lfFaceName[..name.len()].copy_from_slice(&name);unsafe{CreateFontIndirectW(&l)}
@@ -908,7 +910,7 @@ fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
             for (key,name,on) in [(404,"Set reminder…",true),(405,"Clear reminder",!r[5].is_empty()),(408,"Copy note text",true),(409,"Hide widget",true)]{
                 AppendMenuW(menu,MF_STRING|if on{0}else{MF_GRAYED},key,wide(name).as_ptr());
             }
-            let selected=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON|TPM_RIGHTALIGN,rect.right,rect.bottom,0,source,null());DestroyMenu(menu);selected as u16
+            let selected=crate::chrome::menu::track(source,menu,TPM_RETURNCMD|TPM_RIGHTBUTTON|TPM_RIGHTALIGN,rect.right,rect.bottom,ui.appearance);DestroyMenu(menu);selected as u16
         };
         if id==0{return Ok(String::new());}
     }
