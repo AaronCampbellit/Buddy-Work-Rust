@@ -50,6 +50,7 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
             let frame=island::frame();
             if (frame.animating || workspace_masked()) && motion_surface::present(hwnd,&frame){
                 island::apply_region(hwnd,&frame);
+                if frame.animating { motion_surface::synchronize_frame(hwnd); }
                 // Widget and tray commands can select a workspace after asking
                 // to expand. Start the clock once that first frame is actually
                 // drawn with the final destination staged.

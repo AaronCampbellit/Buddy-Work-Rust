@@ -122,6 +122,16 @@ pub(super) fn bitmap_allocated() -> bool {
 #[link(name="dwmapi")]
 extern "system" { fn DwmFlush()->i32; }
 
+/// A layered-window update and its new hit region have both been submitted.
+/// Let DWM present them before the timer can replace this displayed shape.
+pub(super) unsafe fn synchronize_frame(hwnd: HWND) {
+    if IsWindowVisible(hwnd) != 0 {
+        // Composition may be unavailable on a remote or private desktop. The
+        // ordinary island timer and region remain usable when DwmFlush fails.
+        DwmFlush();
+    }
+}
+
 pub(super) struct Handoff(HWND);
 impl Drop for Handoff {
     fn drop(&mut self) { unsafe {
