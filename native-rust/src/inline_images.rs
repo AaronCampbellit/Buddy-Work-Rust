@@ -31,6 +31,8 @@ const CACHE_BYTES:usize=6*1024*1024;
 const THUMB_W:u32=212;
 const THUMB_H:u32=112;
 const EM_SETSEL_:u32=0xb1;
+const EM_GETMODIFY_:u32=0xb8;
+const EM_SETMODIFY_:u32=0xb9;
 const EM_GETSEL_:u32=0xb0;
 const EM_REPLACESEL_:u32=0xc2;
 const WM_USER_:u32=0x400;
@@ -210,7 +212,10 @@ unsafe fn place(hwnd:HWND,bounds:(i32,i32,i32,i32),visible:bool){
 }
 
 #[derive(Default)]
-struct NoteHint { font:Cell<HFONT>, color:Cell<u32> }
+struct NoteHint {
+    font:Cell<HFONT>,color:Cell<u32>,ink:Cell<Option<(u32,u32)>>,
+    painted:Cell<Option<(i32,i32)>>,
+}
 impl Drop for NoteHint {
     fn drop(&mut self) { unsafe { if !self.font.get().is_null(){DeleteObject(self.font.get());} } }
 }
@@ -219,7 +224,7 @@ struct OleGuard;
 impl Drop for OleGuard{fn drop(&mut self){unsafe{OleUninitialize();}}}
 pub(crate) struct Controls{
     pub editor:HWND,preview:HWND,token:Cell<u32>,keys:RefCell<HashMap<u32,String>>,
-    clip:Box<Preview>,hint:Box<NoteHint>,corner_size:Cell<(i32,i32,i32)>,_ole:OleGuard,bg:Cell<u32>,
+    clip:Box<Preview>,hint:Box<NoteHint>,edit_area:Cell<[i32;4]>,corner_size:Cell<(i32,i32,i32)>,_ole:OleGuard,bg:Cell<u32>,
     formatted:Box<Cell<bool>>,retained_format:RefCell<Option<(String,String)>>,style:Cell<(u32,u32,i32,i32)>,load_error:RefCell<Option<String>>,
 }
 impl Controls{
@@ -245,7 +250,7 @@ impl Controls{
             let hint=Box::<NoteHint>::default();
             SetWindowSubclass(editor,Some(hint_proc),2,hint.as_ref() as *const _ as usize);
             SetWindowSubclass(editor,Some(note_proc),1,formatted.as_ref() as *const _ as usize);SetWindowSubclass(preview,Some(preview_proc),1,clip.as_ref() as *const _ as usize);
-            Ok(Self{editor,preview,token:Cell::new(0),keys:Default::default(),clip,hint,corner_size:Cell::new((0,0,0)),_ole:ole,
+            Ok(Self{editor,preview,token:Cell::new(0),keys:Default::default(),clip,hint,edit_area:Cell::new([0;4]),corner_size:Cell::new((0,0,0)),_ole:ole,
                 bg:Cell::new(0xffffff),formatted,retained_format:Default::default(),style:Cell::new((u32::MAX,u32::MAX,0,10)),load_error:Default::default()})
         }
     }
@@ -262,7 +267,7 @@ impl Controls{
     }
 
     pub(crate) fn note_layout(&self, visible:bool, bounds:RECT, zoom:i32, appearance:crate::chrome::Colors, css_px:i32) {
-        let (bg,_,text,_)=appearance;
+        let (bg,_,text,accent)=appearance;
         let field=crate::chrome::control(appearance);
         self.bg.set(field);
         let dpi=crate::shell::dpi(self.editor);
@@ -270,19 +275,23 @@ impl Controls{
         let font_px=(css_px as f32*scaled).round() as i32;
         let state=(field,text,zoom,font_px);
         unsafe {
-            if self.style.get()!=state {
-                SendMessageW(self.editor,EM_SETBKGNDCOLOR,0,field as _);
-                if !self.formatted.get() {
-                    let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>()as u32;
-                    fmt.dwMask=CFM_COLOR|CFM_FACE|CFM_SIZE;fmt.crTextColor=windows::Win32::Foundation::COLORREF(text);fmt.yHeight=css_px*15;
-                    let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
-                    SendMessageW(self.editor,EM_SETCHARFORMAT,SCF_ALL as _,&fmt as *const _ as _);
-                    SendMessageW(self.editor,EM_SETCHARFORMAT,0,&fmt as *const _ as _);
+            if self.hint.ink.replace(Some((text,accent)))!=Some((text,accent)){self.hint.painted.set(None);InvalidateRect(self.editor,null(),0);}
+            let previous=self.style.get();
+            if previous!=state {
+                if previous.0!=field{SendMessageW(self.editor,EM_SETBKGNDCOLOR,0,field as _);}
+                if previous.2!=zoom||previous.3!=font_px {
+                    if !self.formatted.get() {
+                        let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>()as u32;
+                        fmt.dwMask=CFM_COLOR|CFM_FACE|CFM_SIZE;fmt.dwEffects=CFE_AUTOCOLOR;fmt.yHeight=css_px*15;
+                        let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
+                        SendMessageW(self.editor,EM_SETCHARFORMAT,SCF_ALL as _,&fmt as *const _ as _);
+                        SendMessageW(self.editor,EM_SETCHARFORMAT,0,&fmt as *const _ as _);
+                    }
+                    if previous.2!=zoom{SendMessageW(self.editor,EM_SETZOOM,zoom.clamp(50,200)as _,100);}
+                    let mut lf=LOGFONTW::default();lf.lfHeight= -font_px;lf.lfQuality=CLEARTYPE_QUALITY;
+                    let face=wide("Segoe UI");lf.lfFaceName[..face.len()].copy_from_slice(&face);
+                    let old=self.hint.font.replace(CreateFontIndirectW(&lf));if !old.is_null(){DeleteObject(old);}
                 }
-                SendMessageW(self.editor,EM_SETZOOM,zoom.clamp(50,200)as _,100);
-                let mut lf=LOGFONTW::default();lf.lfHeight= -font_px;lf.lfQuality=CLEARTYPE_QUALITY;
-                let face=wide("Segoe UI");lf.lfFaceName[..face.len()].copy_from_slice(&face);
-                let old=self.hint.font.replace(CreateFontIndirectW(&lf));if !old.is_null(){DeleteObject(old);}
                 self.hint.color.set(crate::chrome::mix(bg,text,162));
                 self.style.set(state);
             }
@@ -301,10 +310,14 @@ impl Controls{
                 }
                 let px=(7.0*scaled).round() as i32;let py=(8.0*scaled).round() as i32;
                 InflateRect(&mut area,-px,-py);
-                SendMessageW(self.editor,0x00b4,0,&area as *const _ as _); // EM_SETRECTNP
+                let edges=[area.left,area.top,area.right,area.bottom];
+                if self.edit_area.replace(edges)!=edges {
+                    SendMessageW(self.editor,0x00b4,0,&area as *const _ as _); // EM_SETRECTNP
+                }
             }
         }
     }
+    pub(crate) fn modified(&self)->bool{unsafe{SendMessageW(self.editor,EM_GETMODIFY_,0,0)!=0}}
     pub(crate) fn format(&self)->Result<Option<String>,String>{
         if self.formatted.get(){return rich_text::snapshot(self.editor).map(Some);}
         // Preserve a newer or unsupported format when an older editor is only
@@ -323,7 +336,7 @@ impl Controls{
         if color!=u32::MAX{unsafe{
             let mut fmt=CHARFORMATW::default();fmt.cbSize=size_of::<CHARFORMATW>() as _;
             fmt.dwMask=CFM_BOLD|CFM_ITALIC|CFM_UNDERLINE|CFM_STRIKEOUT|CFM_COLOR|CFM_SIZE|CFM_FACE;
-            fmt.crTextColor=windows::Win32::Foundation::COLORREF(color);
+            fmt.dwEffects=CFE_AUTOCOLOR;
             fmt.yHeight=(font_px as f32*15.0/(crate::shell::dpi(self.editor) as f32/96.0)/(zoom.max(1) as f32/100.0)).round() as i32;
             let face=wide("Segoe UI");fmt.szFaceName[..face.len()].copy_from_slice(&face);
             SendMessageW(self.editor,EM_SETCHARFORMAT,0,&fmt as *const _ as _);
@@ -337,6 +350,7 @@ impl Controls{
         let token=self.token.get().checked_add(1).ok_or("Too many open images.")?;
         let thumb=note_thumbnail(img);
         unsafe{insert(self.editor,cp,token,&thumb,self.bg.get())?;}
+        self.hint.painted.set(None);
         self.token.set(token);self.keys.borrow_mut().insert(token,id.to_owned());Ok(())
     }
     pub fn references(&self,id:&str)->bool{
@@ -383,7 +397,7 @@ impl Controls{
             }
         }
         select(self.editor,0,0);
-        unsafe{SendMessageW(self.editor,0xcd,0,0);}
+        unsafe{SendMessageW(self.editor,0xcd,0,0);SendMessageW(self.editor,EM_SETMODIFY_,0,0);}
         Ok(())
     }
     pub(crate) fn paste_image(&self,ui:&Ui,id:&str)->Result<(),String>{
@@ -581,11 +595,58 @@ unsafe extern "system" fn note_proc(h:HWND,msg:u32,wp:WPARAM,lp:LPARAM,sub:usize
     }
     DefSubclassProc(h,msg,wp,lp)
 }
+// RichEdit resolves automatic ink to the Windows system text color, even on
+// an explicitly dark background. TOM's temporary formatting changes only the
+// display. Streaming, copying, undo and the user's authored colors stay native.
+unsafe fn paint_note_ink(h:HWND,state:&NoteHint){
+    let Some((text,link))=state.ink.get()else{return};
+    let mut client=RECT::default();GetClientRect(h,&mut client);
+    let index=|x,y|{let point=windows_sys::Win32::Foundation::POINT{x,y};SendMessageW(h,0xd7,0,&point as *const _ as _)as i32}; // RichEdit EM_CHARFROMPOS
+    let start=index(1,1).max(0);let visible_end=index((client.right-1).max(1),(client.bottom-1).max(1)).saturating_add(1);
+    if state.painted.get().is_some_and(|(from,to)|from<=start && to>=visible_end){return}
+    let Ok(ole)=interface(h)else{return};let Ok(doc)=ole.cast::<ITextDocument>()else{return};
+    let Ok(range)=doc.Range(start,start)else{return};
+    // On the first paint after inserting an OLE image, hit-testing can still
+    // describe the old line layout. Cover a viewport-sized block ahead of it.
+    // This keeps updates local even for long, heavily formatted documents.
+    let ahead=(client.right.saturating_mul(client.bottom)/24).clamp(256,16_384);
+    let limit=visible_end.max(start.saturating_add(ahead));
+    let Ok(length)=range.GetStoryLength()else{return};
+    let end=limit.min(length);let mut cp=start;
+    state.painted.set(Some((start,limit)));
+    // Msftedit records an undo item and emits EN_CHANGE even for display-only
+    // formatting. Preserve the undo stack and modified state through this call.
+    let mut scroll=windows_sys::Win32::Foundation::POINT::default();
+    SendMessageW(h,EM_GETSCROLLPOS,0,&mut scroll as *mut _ as _);
+    let suspended=doc.Undo(tomSuspend.0).is_ok();
+    let modified=SendMessageW(h,EM_GETMODIFY_,0,0);
+    let mask=SendMessageW(h,EM_GETEVENTMASK,0,0);
+    SendMessageW(h,EM_SETEVENTMASK,0,mask & !(ENM_CHANGE as isize));
+    while cp<end{
+        if range.SetRange(cp,cp).is_err()||range.EndOf(tomCharFormat.0,tomExtend.0).is_err(){break}
+        let next=range.GetEnd().unwrap_or(cp).min(end);if next<=cp{break}
+        if range.SetRange(cp,next).is_err(){break}
+        if let Ok(font)=range.GetFont(){if font.GetForeColor()==Ok(tomAutoColor.0){
+            let is_link=font.cast::<ITextFont2>().and_then(|v|v.GetLinkType()).is_ok_and(|kind|kind!=tomNoLink.0);
+            if font.Reset(tomApplyTmp).is_ok(){let _=font.SetForeColor(if is_link{link}else{text}as i32);let _=font.Reset(tomApplyNow);}
+        }}
+        cp=next;
+    }
+    if suspended{let _=doc.Undo(tomResume.0);}
+    let mut current=windows_sys::Win32::Foundation::POINT::default();
+    SendMessageW(h,EM_GETSCROLLPOS,0,&mut current as *mut _ as _);
+    if current.x!=scroll.x||current.y!=scroll.y{SendMessageW(h,EM_SETSCROLLPOS,0,&scroll as *const _ as _);}
+    if modified==0{SendMessageW(h,EM_SETMODIFY_,0,0);}
+    SendMessageW(h,EM_SETEVENTMASK,0,mask);
+}
+
 unsafe extern "system" fn hint_proc(h:HWND,msg:u32,wp:usize,lp:isize,sub:usize,data:usize)->isize {
-    if msg==WM_NCDESTROY {RemoveWindowSubclass(h,Some(hint_proc),sub);}
+    if msg==WM_NCDESTROY {RemoveWindowSubclass(h,Some(hint_proc),sub);return DefSubclassProc(h,msg,wp,lp);}
+    let hint=&*(data as *const NoteHint);
+    if matches!(msg,WM_SETTEXT|WM_CHAR|WM_KEYDOWN|WM_PASTE|WM_CUT|WM_CLEAR|WM_UNDO|0xc7|WM_IME_COMPOSITION|EM_REDO|EM_STREAMIN|EM_SETTEXTEX|EM_SETCHARFORMAT|EM_REPLACESEL_){hint.painted.set(None);}
+    if matches!(msg,WM_PAINT|WM_PRINT|WM_PRINTCLIENT){paint_note_ink(h,hint);}
     let result=DefSubclassProc(h,msg,wp,lp);
     if matches!(msg,WM_PAINT|WM_PRINT|WM_PRINTCLIENT) && GetWindowTextLengthW(h)==0 {
-        let hint=&*(data as *const NoteHint);
         let dc=if msg==WM_PAINT {GetDC(h)} else {wp as HDC};
         if !dc.is_null() && !hint.font.get().is_null() {
             let mut r=RECT::default();SendMessageW(h,0xb2,0,&mut r as *mut _ as _); // EM_GETRECT
@@ -665,6 +726,54 @@ mod tests{
             let image=RgbaImage::from_raw(w,h,rgba).unwrap();
             image.save(PathBuf::from(folder).join(name)).unwrap();
         }
+    }
+
+    #[test]
+    #[ignore="checks native note text pixels and RTF on a private Windows window station"]
+    fn automatic_note_color_tracks_theme_on_both_editors(){
+        workspace::with_private_test_desktop(||unsafe{
+            let parent=CreateWindowExW(0,wide("STATIC").as_ptr(),wide("Note color test").as_ptr(),WS_POPUP,0,0,450,300,null_mut(),null_mut(),null_mut(),null());
+            let mut ui=Ui::new(windows::Win32::Foundation::HWND(parent),std::env::temp_dir().join(format!("Buddy-note-colors-{}",std::process::id())),true).unwrap();
+            let note=["map","Coastal trail guide","Map palette\n\nSea glass marks the trail. Navy is for place names.\nBase map: https://www.openstreetmap.org","1","1","","1"].map(str::to_owned);
+            let rtf=r"{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}{\colortbl ;\red0\green105\blue109;}\f0\fs20 {\b\fs30\cf1 Map palette}\par\par Sea glass marks the trail. Navy is for place names.\par Base map: https://www.openstreetmap.org\par}";
+            let dark=(0x181212,0x232020,0xf6f1f4,0xce9500);let light=(0xffffff,0xffffff,0x291809,0xaa5500);
+            let area=crate::chrome::rect(0,0,420,230);
+            let verify=|edit:&Controls,palette:crate::chrome::Colors,css:i32|{
+                edit.note_layout(true,area,100,palette,css);select(edit.editor,0,0);
+                let pixels=capture(edit.editor,420,230);
+                let ink_in_run=|cp:usize,ink:u32|{
+                    let mut p=windows_sys::Win32::Foundation::POINT::default();SendMessageW(edit.editor,0xd6,&mut p as *mut _ as _,cp as _);
+                    let c=ink.to_le_bytes();let mut count=0;
+                    for y in p.y.max(0)..(p.y+17).min(230){for x in p.x.max(0)..(p.x+150).min(420){
+                        let at=(y*420+x)as usize*4;
+                        if pixels[at].abs_diff(c[2])<36&&pixels[at+1].abs_diff(c[1])<36&&pixels[at+2].abs_diff(c[0])<36{count+=1;}
+                    }}count
+                };
+                assert!(ink_in_run(0,0x6d6900)>25,"custom heading ink");
+                let count=ink_in_run(13,palette.2);assert!(count>20,"{css}px body must paint with theme ink {:#x}, got {count} pixels",palette.2);
+                let doc:ITextDocument=interface(edit.editor).unwrap().cast().unwrap();let font=doc.Range(13,14).unwrap().GetFont().unwrap();
+                assert_eq!(font.GetForeColor().unwrap(),tomAutoColor.0,"stored body color is automatic");
+                assert_eq!(doc.Range(0,1).unwrap().GetFont().unwrap().GetForeColor().unwrap(),0x6d6900,"preserve explicit heading color");
+                let saved=edit.format().unwrap().unwrap();assert!(!saved.contains(r"\red244\green241\blue246")&&!saved.contains(r"\red9\green24\blue41"));saved
+            };
+            for css in [10,13]{
+                let edit=Controls::new(parent).unwrap();ui.records.insert(format_key("map"),vec![vec![rtf.into()]]);edit.note_layout(true,area,100,dark,css);edit.load_row(&ui,&note).unwrap();
+                verify(&edit,dark,css);verify(&edit,light,css);let saved=verify(&edit,dark,css);
+                ui.records.insert(format_key("map"),vec![vec![saved]]);edit.set_body("");edit.load_row(&ui,&note).unwrap();verify(&edit,light,css);
+                // Use an actual nonzero scroll offset and a nonempty selection.
+                let long=(0..140).map(|i|format!("Line {i} text\n")).collect::<String>();
+                edit.set_body(&long);edit.note_layout(true,area,100,light,css);
+                select(edit.editor,600,604);let mut pos=windows_sys::Win32::Foundation::POINT{x:0,y:180};
+                SendMessageW(edit.editor,EM_SETSCROLLPOS,0,&mut pos as *mut _ as _);
+                let scroll=||{let mut p=windows_sys::Win32::Foundation::POINT::default();SendMessageW(edit.editor,EM_GETSCROLLPOS,0,&mut p as *mut _ as _);(p.x,p.y)};
+                let original=scroll();assert!(original.1>0);
+                edit.note_layout(true,area,100,dark,css);capture(edit.editor,420,230);
+                assert_eq!(scroll(),original,"theme refresh keeps the scrolled note viewport");
+                assert_eq!(selection(edit.editor),(600,604),"theme refresh keeps the selected text");
+                drop(edit);
+            }
+            DestroyWindow(parent);drop(ui);
+        });
     }
 
     #[test]

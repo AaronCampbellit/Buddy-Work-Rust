@@ -252,3 +252,105 @@ fn opening_tab_click_and_reversal_preserve_visible_targets(){
     });
     if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
 }
+
+#[test]
+#[ignore="checks first-frame rich note colors in real app and widget windows on a private Windows station"]
+fn rich_note_uses_theme_on_first_workspace_and_widget_frame(){
+    use windows::Win32::UI::Controls::RichEdit::{EM_CANREDO,EM_GETSCROLLPOS,EM_REDO,EM_STOPGROUPTYPING};
+    let temp=env::temp_dir().join(format!("Buddy-rich-note-frame-{}-{}",std::process::id(),core::now()));
+    let profile=temp.join("fixture-image");fs::create_dir_all(profile.join("images")).unwrap();
+    if let Some(source)=env::var_os("BUDDY_ISLAND_FIXTURES"){
+        let source=PathBuf::from(source).join("fixture-image");
+        fs::copy(source.join("state-v1.dpapi"),profile.join("state-v1.dpapi")).unwrap();
+        for file in fs::read_dir(source.join("images")).unwrap().map(Result::unwrap){
+            fs::copy(file.path(),profile.join("images").join(file.file_name())).unwrap();
+        }
+    }else{seed_profiles(&temp);}
+    workspace::with_private_test_desktop(||unsafe{
+        let widgets=[island::Widget::Note];
+        let hwnd=create_app(&profile,true,&widgets);
+        let rtf=r"{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}{\colortbl ;\red0\green105\blue109;}\f0\fs20 {\b\fs30\cf1 Map palette}\par\par Sea glass marks the trail. Navy is for place names.\par Base map: https://www.openstreetmap.org\par}";
+        with_ui(|ui|{
+            let image=ui.records["clipboard"][0][1].clone();
+            let mut note=["map","Coastal trail guide","Map palette\n\nSea glass marks the trail. Navy is for place names.\nBase map: https://www.openstreetmap.org","1","1","","1"].map(str::to_owned).to_vec();
+            note.push(image);
+            ui.records.insert("notes".into(),vec![note]);
+            ui.records.insert(inline_images::offset_key("map"),vec![vec!["12".into()]]);
+            ui.records.insert(inline_images::format_key("map"),vec![vec![rtf.into()]]);
+            core::set(ui,"noteWidget","map");core::set(ui,"motion","off");
+        });
+        let mut saved_stamp=String::from("1");
+        for (name,theme) in [("dark","dark"),("light","light"),("reopened","dark")]{
+            for opened in [true,false]{
+                let mut ink=0;
+                with_ui(|ui|{
+                    core::set(ui,"theme",theme);
+                    let layout=island::Layout::new(RECT{left:0,top:0,right:1920,bottom:1080},96,100,island::Placement::Center,376,&widgets);
+                    let h=layout.host;SetWindowPos(hwnd,null_mut(),h.left,h.top,h.right-h.left,h.bottom-h.top,SWP_NOACTIVATE|SWP_NOZORDER);
+                    ui.expanded=opened;island::configure(layout,opened);island::request(opened,true);
+                    island::apply_region(hwnd,&island::frame());ui.apply_appearance();
+                    ui.active_note=Some("map".into());ui.navigate(if opened{"notes"}else{"home"});ui.layout();side_widgets::sync(ui);
+                    ink=ui.appearance.2;
+                });
+                let target=if opened{hwnd}else{FindWindowW(wide("BuddyRustSideWidgets").as_ptr(),null())};
+                assert!(!target.is_null());let mut area=island::frame().body;if !opened{GetClientRect(target,&mut area);}
+                // Capture immediately, before pumping messages or asking the native
+                // editor to measure any characters. Both can mask a stale OLE layout.
+                let frame=render(target,area);
+                with_ui(|ui|{
+                    assert!(!ui.dirty_note,"temporary paint marked the note dirty in {name}");
+                    assert_eq!(ui.records["notes"][0][6],saved_stamp,"repainting changed the note timestamp in {name}");
+                });
+                let surface=if opened{"workspace"}else{"widget"};
+                if let Some(dir)=env::var_os("BUDDY_UI_CAPTURE_DIR"){
+                    let dir=PathBuf::from(dir);fs::create_dir_all(&dir).unwrap();
+                    save(&dir,&format!("rich-{name}-{surface}"),&frame);
+                }
+                assert!(fixture_pixels(&frame)>120,"inline image on {name} {surface}");
+                let parent=if opened{hwnd}else{FindWindowExW(target,null_mut(),wide("BuddyRustSideCard").as_ptr(),null())};
+                let edit=GetDlgItem(parent,inline_images::NOTE_EDITOR as i32);assert!(!edit.is_null());
+                let mut point=POINT::default();
+                SendMessageW(edit,0xd6,&mut point as *mut _ as _,14); // EM_POSFROMCHAR, first ordinary text after image.
+                MapWindowPoints(edit,target,&mut point,1);
+                let (x,y)=((point.x-area.left).max(0)as u32,(point.y-area.top).max(0)as u32);
+                let rgb=ink.to_le_bytes();
+                let pixels=image::imageops::crop_imm(&frame,x,y,150.min(frame.width()-x),16.min(frame.height()-y)).pixels()
+                    .filter(|(_,_,p)|p[3]>0 && (0..3).all(|ch|p[ch].abs_diff(rgb[ch])<35)).count();
+                assert!(pixels>30,"{name} {surface}: only {pixels} body pixels with theme ink {ink:#x} at {x},{y}");
+                if name!="reopened"{continue}
+
+                let marker=if opened{'Ω'}else{'Ψ'};
+                let editor_view=||{
+                    let (mut a,mut b)=(0u32,0u32);SendMessageW(edit,0xb0,&mut a as *mut _ as _,&mut b as *mut _ as _);
+                    let mut scroll=POINT::default();SendMessageW(edit,EM_GETSCROLLPOS,0,&mut scroll as *mut _ as _);
+                    (a,b,scroll.x,scroll.y)
+                };
+                let repaint=|theme:&str|{
+                    with_ui(|ui|{core::set(ui,"theme",theme);ui.apply_appearance();ui.layout();side_widgets::sync(ui);});
+                    let _=render(target,area);
+                };
+                SendMessageW(edit,0xb1,34,34); // place caret inside the ordinary text
+                SendMessageW(edit,WM_CHAR,marker as usize,1);SendMessageW(edit,EM_STOPGROUPTYPING,0,0);
+                assert!(ui::window_text(edit,4096).contains(marker),"typing works in {surface}");
+                let before=editor_view();repaint("light");
+                assert_eq!(before,editor_view(),"theme repaint moved the selection or scroll in {surface}");
+                assert_ne!(SendMessageW(edit,0xc6,0,0),0,"typing has undo in {surface}");
+                assert_ne!(SendMessageW(edit,0xc7,0,0),0,"native EM_UNDO in {surface}");
+                assert!(!ui::window_text(edit,4096).contains(marker),"first undo removes the typed character in {surface}");
+                let before=editor_view();repaint("dark");
+                assert_eq!(before,editor_view(),"repaint after undo moved the selection or scroll in {surface}");
+                assert_ne!(SendMessageW(edit,EM_CANREDO,0,0),0,"redo survives theme repaint in {surface}");
+                SendMessageW(edit,EM_REDO,0,0);
+                assert!(ui::window_text(edit,4096).contains(marker),"redo restores the character in {surface}");
+                with_ui(|ui|{
+                    if opened{assert!(ui.dirty_note);core::save_note(ui).unwrap();}else{side_widgets::flush(ui).unwrap();}
+                    assert!(ui.records["notes"][0][2].contains(marker),"save actual {surface} edit");
+                    let stamp=ui.records["notes"][0][6].clone();assert_ne!(stamp,saved_stamp,"timestamp of actual {surface} edit");
+                    saved_stamp=stamp;
+                });
+            }
+        }
+        close_app(hwnd);
+    });
+    fs::remove_dir_all(temp).unwrap();
+}

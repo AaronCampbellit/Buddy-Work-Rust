@@ -650,7 +650,9 @@ unsafe fn read_editor(h:HWND,debounce:bool){
         let title=window_text(GetDlgItem(h,TITLE as i32),32768);
         let Some(editor)=&note.rich else{return};
         let Ok((body,images))=editor.contents()else{return};
-        let Ok(format)=editor.format()else{return};
+        // Msftedit normalizes imported RTF when streaming it out. An untouched
+        // widget still owns the original authored RTF, including on close.
+        let format=if editor.modified(){let Ok(rtf)=editor.format()else{return};rtf}else{note.data.format.clone()};
         DRAFT.with(|d|{
             let mut d=d.borrow_mut();if let Some(old)=d.as_mut(){
                 if old.id==note.data.id{old.title=title;old.body=body;old.images=images;old.format=format;}
