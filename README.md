@@ -6,7 +6,7 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.48** · 24.06 MB installer · 45.40 MB installed on Windows 11 x64
+**0.1.1-beta.48** · 24.07 MB installer · 45.40 MB installed on Windows 11 x64
 
 ## Workspaces
 
@@ -159,7 +159,7 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 <details>
 <summary><strong>Watch the island open and close</strong></summary>
 
-You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
+You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate. On our Windows 11 VM, the first time a pinned note opened in the main window, animation began about 0.6–0.7 seconds after the click.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/notes.png">
@@ -172,7 +172,7 @@ You can select a tab while the island is opening. Buddy opens the last tab you s
 
 ## Install and permissions
 
-The installer runs under your Windows user account and is unsigned. The app folder uses 45,396,903 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.53 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,398,951 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.53 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
