@@ -77,7 +77,7 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 3. Edit the title or body directly in the widget. Press **Ctrl+V** or right-click and choose **Paste** to insert an image at the cursor. The widget saves as you edit. Choose **Open note in Buddy** to continue in the main editor.
 
 <p>
-  <a href="docs/screenshots/rich-pinned-note.png?raw=true"><img src="docs/screenshots/rich-pinned-note.png" width="390" alt="Editable pinned note showing its title, colored inline image, map link, and reminder field"></a>
+  <a href="docs/screenshots/rich-pinned-note.png?raw=true"><img src="docs/screenshots/rich-pinned-note.png" width="390" alt="Editable pinned note in dark mode with readable body text, a colored inline image, a map link, and a reminder field"></a>
   <a href="docs/screenshots/pinned-clipboard.png?raw=true"><img src="docs/screenshots/pinned-clipboard.png" width="390" alt="Pinned clipboard widget showing the map palette and clipboard actions"></a>
 </p>
 
@@ -166,7 +166,7 @@ The island expands around the status header while the workspace fades into view.
 
 ## Install and permissions
 
-The installer runs under your Windows user account and is unsigned. The app folder uses 45,349,799 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.48 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,354,407 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.49 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
