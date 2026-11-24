@@ -2,11 +2,11 @@
 
 # Buddy Work for Windows
 
-Buddy keeps notes, clipboard history, downloads, timers, and device controls in an island at the top of your desktop. Click the island or press **Ctrl+Alt+Space** to expand it.
+Buddy keeps notes, clipboard history, downloads, timers, and device controls in an island at the top of your desktop. Click the island or press **Ctrl+Alt+Space** to expand it. To open any of its 17 pages, right-click the island header or tray icon and choose **Workspaces**.
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.46** · 24.06 MB installer · 45.35 MB installed on Windows 11 x64
+**0.1.1-beta.47** · 24.06 MB installer · 45.37 MB installed on Windows 11 x64
 
 ## Workspaces
 
@@ -153,7 +153,7 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 <details>
 <summary><strong>Watch the island open and close</strong></summary>
 
-The island expands around the status header while the workspace fades into view. Windows reduced-motion settings and Buddy’s own reduced-motion switch make the change immediate.
+You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/notes.png">
@@ -166,7 +166,7 @@ The island expands around the status header while the workspace fades into view.
 
 ## Install and permissions
 
-The installer runs under your Windows user account and is unsigned. The app folder uses 45,354,407 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.49 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,372,327 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.50 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
@@ -174,6 +174,6 @@ Windows encrypts saved notes and clipboard history for the current user. OCR run
 
 Buddy uses Rust and native Win32 controls. Build from `native-rust` on Windows x64. To package the app, extract the matching portable ZIP and pass its `Buddy\camera` folder to the packager. [Build and packaging instructions](native-rust/README.md#build-and-package-on-windows-x64)
 
-[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.46/Buddy-Work-Rust-Setup-x64.exe
-[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.46/Buddy-Work-Rust-Portable-x64.zip
-[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.46
+[setup]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.47/Buddy-Work-Rust-Setup-x64.exe
+[portable]: https://github.com/AaronCampbellit/buddy-work-windows/releases/download/v0.1.1-beta.47/Buddy-Work-Rust-Portable-x64.zip
+[release]: https://github.com/AaronCampbellit/buddy-work-windows/releases/tag/v0.1.1-beta.47
