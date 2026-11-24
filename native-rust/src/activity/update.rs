@@ -33,7 +33,7 @@ fn get(uri:&Uri)->Result<Vec<u8>,String>{
     let target=wide(&format!("{}{}",uri.Path().map_err(|_|"Invalid path.")?,uri.Query().map_err(|_|"Invalid query.")?));
     let port=u16::try_from(uri.Port().map_err(|_|"Invalid port.")?).map_err(|_|"Invalid port.")?;
     unsafe {
-        let session=Handle::new(WinHttpOpen(wide("Buddy Work Rust").as_ptr(),4,null(),null(),0))?;
+        let session=Handle::new(WinHttpOpen(wide("Buddy").as_ptr(),4,null(),null(),0))?;
         if WinHttpSetTimeouts(session.0,10000,10000,10000,10000)==0 {return Err("Unable to set HTTPS timeouts.".into());}
         let conn=Handle::new(WinHttpConnect(session.0,host.as_ptr(),port,0))?;
         let req=Handle::new(WinHttpOpenRequest(conn.0,wide("GET").as_ptr(),target.as_ptr(),null(),null(),null(),0x00800000))?;

@@ -46,7 +46,7 @@ await mkdir(output);
 const work=await mkdtemp(path.join(output,"pack-"));
 try {
   await mkdir(app);
-  await copyFile(binary,path.join(app,"BuddyRust.exe"));
+  await copyFile(binary,path.join(app,"Buddy.exe"));
   for (const relative of ["BuddyCameraHost.exe","BuddyCameraSource.dll","ai/manifest.json","ai/onnxruntime.dll","ai/onnxruntime_providers_shared.dll","ai/person-segmentation.onnx","ai/ONNX-RUNTIME-LICENSE.txt","ai/ONNX-RUNTIME-NOTICES.txt","ai/PERSON-MODEL-LICENSE.txt"]) {
     const buf=await readFile(path.join(camera,relative));
     if(createHash("sha256").update(buf).digest("hex")!==cameraManifest.hashes[relative]) throw Error("Camera verification failed for "+relative);
@@ -84,16 +84,16 @@ try {
   if([...files,...dirs].some(p=>/["$\r\n]/.test(p))) throw Error("Unsupported character in a package file name.");
   const deleteList=path.join(work,"files.nsh");
   await writeFile(deleteList,[...files.map(f=>'Delete "$INSTDIR\\'+f+'"'),...dirs.map(d=>'RMDir "$INSTDIR\\'+d+'"')].join("\r\n"));
-  run(nsis,["/V2","/DPAYLOAD="+app,"/DOUTPUT="+path.join(output,"Buddy-Work-Rust-Setup-x64.exe"),"/DDELETEFILES="+deleteList,"/DBUDDYVERSION="+version,path.join(here,"packaging/installer.nsi")]);
-  run(path.join(process.env.WINDIR,"System32/tar.exe"),["-a","-cf",path.join(output,"Buddy-Work-Rust-Portable-x64.zip"),"Buddy"],false,{cwd:output});
-
-  // The MSIX is an additional deployment format for capabilities that require package identity.
-  const msixStage=path.join(work,"msix");
-  await cp(app,msixStage,{recursive:true});
   const match=/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(version);
   if(!match) throw Error("Unsupported numeric MSIX version.");
   const numbers=[...match.slice(1,4).map(Number),Number(match[4]??65535)];
   if(numbers.some(n=>n>65535) || (match[4] && numbers[3]>=65535))throw Error("MSIX version component out of range.");
+  run(nsis,["/V2","/DPAYLOAD="+app,"/DOUTPUT="+path.join(output,"Buddy-Setup-x64.exe"),"/DDELETEFILES="+deleteList,"/DBUDDYVERSION="+version,"/DBUDDYFILEVERSION="+numbers.join("."),path.join(here,"packaging/installer.nsi")]);
+  run(path.join(process.env.WINDIR,"System32/tar.exe"),["-a","-cf",path.join(output,"Buddy-Portable-x64.zip"),"Buddy"],false,{cwd:output});
+
+  // The MSIX is an additional deployment format for capabilities that require package identity.
+  const msixStage=path.join(work,"msix");
+  await cp(app,msixStage,{recursive:true});
   const publisher=process.env.BUDDY_MSIX_PUBLISHER || "CN=Buddy Work Prototype";
   if(/[<>\u0000-\u001f]/.test(publisher)) throw Error("Invalid MSIX publisher name.");
   const manifest=(await readFile(path.join(here,"packaging/Package.appxmanifest"),"utf8"))
@@ -110,7 +110,7 @@ try {
   ].join("\n");
   run(path.join(process.env.WINDIR,"System32/WindowsPowerShell/v1.0/powershell.exe"),["-NoProfile","-NonInteractive","-Command",assets],false,
     {env:{...process.env,BUDDY_ICON:path.join(repo,"build/buddy-icon.png"),BUDDY_ASSETS:path.join(msixStage,"Assets")}});
-  run(packer,["pack","/d",msixStage,"/p",path.join(output,"Buddy-Work-Rust-x64-unsigned.msix"),"/no"]);
+  run(packer,["pack","/d",msixStage,"/p",path.join(output,"Buddy-x64-unsigned.msix"),"/no"]);
 } finally {
   await rm(work,{recursive:true,force:true});
 }

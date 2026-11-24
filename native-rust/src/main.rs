@@ -412,7 +412,7 @@ fn run()->Result<(),String>{unsafe{
     if RegisterClassW(&descriptor)==0{return Err("Windows could not register the Buddy window.".into())}
     // Present the parent background and its GDI/Rich Edit child windows as a
     // single paint during workspace swaps and the hand-off from a fade.
-    let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_COMPOSITED,class.as_ptr(),wide("Buddy Work Rust").as_ptr(),WS_POPUP|WS_CLIPCHILDREN,
+    let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_COMPOSITED,class.as_ptr(),wide("Buddy").as_ptr(),WS_POPUP|WS_CLIPCHILDREN,
         0,0,760,520,null_mut(),null_mut(),instance,null());if hwnd.is_null(){return Err("Windows could not create the Buddy window.".into())}
     let mut ui=Ui::new(TypedWindow(hwnd),profile,isolated)?;SetWindowSubclass(ui.detail_box,Some(editor_proc),1,0);
     for id in [ui::COMPACT,ui::COMPACT_TOOLS]{SetWindowSubclass(GetDlgItem(hwnd,id as i32),Some(compact_proc),2,0);}
@@ -441,7 +441,7 @@ fn run()->Result<(),String>{unsafe{
     }
     WINDOW.with(|s|{s.borrow_mut().take();});CoUninitialize();if !mutex.is_null(){CloseHandle(mutex);}Ok(())
 }}
-fn main(){if let Err(e)=run(){unsafe{MessageBoxW(null_mut(),wide(&e).as_ptr(),wide("Buddy Work Rust").as_ptr(),MB_ICONERROR);}}}
+fn main(){if let Err(e)=run(){unsafe{MessageBoxW(null_mut(),wide(&e).as_ptr(),wide("Buddy").as_ptr(),MB_ICONERROR);}}}
 
 #[cfg(test)]
 mod fade_tests {

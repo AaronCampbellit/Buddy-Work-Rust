@@ -1,6 +1,6 @@
-# Buddy Work for Windows, native Rust prototype
+# Buddy
 
-BuddyRust.exe implements the work edition with Win32 controls, native Windows services, local OCR, and an independent per-user profile. It can run alongside the Electron and WebView2 editions. The camera studio uses the same pinned Buddy Camera component as those editions. The Rust app does not use Electron, a WebView2 browser process, or Microsoft Graph. Calendar and Zen browser integration are excluded.
+Buddy.exe implements the work edition with Win32 controls, native Windows services, local OCR, and an independent per-user profile. It can run alongside the Electron and WebView2 editions. The camera studio uses the same pinned Buddy Camera component as those editions. The Rust app does not use Electron, a WebView2 browser process, or Microsoft Graph. Calendar and Zen browser integration are excluded.
 
 ## Features and access
 
@@ -17,7 +17,7 @@ BuddyRust.exe implements the work edition with Win32 controls, native Windows se
 
 Choose a note in the Widgets picker to edit its title and body directly on the island. Use Ctrl+V, Shift+Insert, or right-click and choose Paste. Both editors retain rich-text and HTML clipboard formatting, including emphasis, font sizes and colors. Pasted clipboard images appear inline at the caret and keep their position after reopening. The widget header’s More menu holds reminder, copy and hide actions. Ctrl+click an HTTP or HTTPS link to open it, or select its URL and press Ctrl+Enter. Changes appear in the same note in the Notes workspace.
 
-The EXE installer uses current-user privileges. The packaged desktop app runs with the signed-in user's file access. The MSIX declares runFullTrust, webcam, globalMediaControl and userNotificationListener. A managed Windows deployment needs a signed package from a trusted publisher. The prototype uses its own profile under LocalAppData, separate from the other editions.
+The EXE installer uses current-user privileges. The packaged desktop app runs with the signed-in user's file access. The MSIX declares runFullTrust, webcam, globalMediaControl and userNotificationListener. A managed Windows deployment needs a signed package from a trusted publisher. Buddy uses its own profile under LocalAppData, separate from the other editions.
 
 ## Build and package on Windows x64
 

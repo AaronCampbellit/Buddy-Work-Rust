@@ -7,7 +7,7 @@ pub const CALLBACK:u32=WM_APP+25;
 pub const REVEAL:u32=WM_APP+26;
 pub fn focus(h:HWND){unsafe{SetFocus(h);}}
 pub fn dpi(h:HWND)->u32{unsafe{GetDpiForWindow(h).max(96)}}
-pub fn confirm(ui:&Ui,s:&str)->bool{unsafe{MessageBoxW(ui.hwnd.0,wide(s).as_ptr(),wide("Buddy Work").as_ptr(),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDYES}}
+pub fn confirm(ui:&Ui,s:&str)->bool{unsafe{MessageBoxW(ui.hwnd.0,wide(s).as_ptr(),wide("Buddy").as_ptr(),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDYES}}
 pub fn clock(mode: &str, custom: &str) -> String {
     if mode=="custom"{return custom.to_owned()}
     #[link(name="kernel32")]
@@ -347,7 +347,7 @@ fn tray_data(ui:&Ui)->NOTIFYICONDATAW{let mut n=NOTIFYICONDATAW::default();n.cbS
 pub fn tray(ui:&Ui,create:bool){if ui.isolated{return}let mut n=tray_data(ui);unsafe{
     if create{n.uFlags=NIF_ICON|NIF_MESSAGE|NIF_TIP;n.uCallbackMessage=CALLBACK;
         n.hIcon=LoadIconW(GetModuleHandleW(null()),101usize as _);if n.hIcon.is_null(){n.hIcon=LoadIconW(null_mut(),IDI_APPLICATION);}
-        let tip=wide("Buddy Work");n.szTip[..tip.len()].copy_from_slice(&tip);Shell_NotifyIconW(NIM_ADD,&n);}else{Shell_NotifyIconW(NIM_DELETE,&n);}
+        let tip=wide("Buddy");n.szTip[..tip.len()].copy_from_slice(&tip);Shell_NotifyIconW(NIM_ADD,&n);}else{Shell_NotifyIconW(NIM_DELETE,&n);}
 }}
 pub fn balloon(ui:&Ui,title:&str,body:&str){if ui.isolated{return}let mut n=tray_data(ui);n.uFlags=NIF_INFO;n.dwInfoFlags=NIIF_INFO;
     for (slot,ch) in n.szInfoTitle.iter_mut().take(63).zip(title.encode_utf16()){*slot=ch;}for (slot,ch) in n.szInfo.iter_mut().take(255).zip(body.encode_utf16()){*slot=ch;}unsafe{Shell_NotifyIconW(NIM_MODIFY,&n);}}

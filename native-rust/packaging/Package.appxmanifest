@@ -7,8 +7,8 @@
   IgnorableNamespaces="uap uap3 uap7 rescap">
   <Identity Name="Buddy.Work.Rust.Prototype" Publisher="@PUBLISHER@" Version="@VERSION@" ProcessorArchitecture="x64"/>
   <Properties>
-    <DisplayName>Buddy Work Rust</DisplayName>
-    <PublisherDisplayName>Buddy Work Prototype</PublisherDisplayName>
+    <DisplayName>Buddy</DisplayName>
+    <PublisherDisplayName>Buddy</PublisherDisplayName>
     <Logo>Assets\Store.png</Logo>
   </Properties>
   <Dependencies>
@@ -16,8 +16,8 @@
   </Dependencies>
   <Resources><Resource Language="en-US"/></Resources>
   <Applications>
-    <Application Id="Buddy" Executable="BuddyRust.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="Buddy Work Rust" Description="Local Windows activity island"
+    <Application Id="Buddy" Executable="Buddy.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Buddy" Description="Local Windows activity island"
         BackgroundColor="transparent" Square44x44Logo="Assets\Tile44.png" Square150x150Logo="Assets\Tile150.png"/>
     </Application>
   </Applications>
