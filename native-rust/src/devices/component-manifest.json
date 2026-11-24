@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/AaronCampbellit/buddy-virtual-camera.git",
+  "commit": "9d87c96dfe82484835b13eb9f61a6ac22f7634b2",
+  "hashes": {
+    "BuddyCameraHost.exe": "61cc5af787a7f6afacff2d08edcff6621d7b421b99992c344f6340d108d09208",
+    "BuddyCameraSource.dll": "4dc11334d7697db42075a2d6ee8b0730f7e3b61bb066192eb30263a4136432d2",
+    "ai/onnxruntime.dll": "0c42dc4e278f0968fdf9ebf1b1e54a74c657a9942e70803e453c91993451cf4c",
+    "ai/onnxruntime_providers_shared.dll": "e45d471ea2a842b268c51291b96d53568b0dae10807f43d1fb7dc0eb84e83723",
+    "ai/person-segmentation.onnx": "552d8a984054e59b5d773d24b9b12022b22046ceb2bbc4c9aaeaceb36a9ddf24",
+    "ai/ONNX-RUNTIME-LICENSE.txt": "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
+    "ai/ONNX-RUNTIME-NOTICES.txt": "c53a76501ef60db6f865f20599f220761201ac4057683acefdab37d861b86622",
+    "ai/PERSON-MODEL-LICENSE.txt": "d9cf3b547fa4232fb9285f2db52e909f10f00781aaf64a6d0bb90c55149f1363",
+    "ai/manifest.json": "69a783b8c8e95c22b99c356ae4beb07eee6eb4d8e7cca619e8178e79b2cf102b"
+  }
+}

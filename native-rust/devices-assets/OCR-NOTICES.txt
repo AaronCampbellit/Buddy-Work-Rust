@@ -1,0 +1,6 @@
+Buddy includes unmodified Ocrs Latin text detection and recognition models by Robert Knight.
+Model source: https://github.com/robertknight/ocrs-models
+Model files: https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.onnx
+             https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx
+The models were trained on the HierText dataset and are shared under Creative Commons Attribution-ShareAlike 4.0 International.
+https://creativecommons.org/licenses/by-sa/4.0/

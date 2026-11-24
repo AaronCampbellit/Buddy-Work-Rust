@@ -1,0 +1,54 @@
+[package]
+name = "buddy-work-native"
+version = "0.1.1-beta.44"
+edition = "2021"
+publish = false
+default-run = "BuddyRust"
+
+[[bin]]
+name = "BuddyRust"
+path = "src/main.rs"
+
+[dependencies]
+html5gum = { version = "=0.9.2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17.16"
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+ocrs = "=0.13.1"
+rten = { version = "0.26", default-features = false, features = ["onnx_format"] }
+windows = { version = "=0.62.2", features = [
+  "ApplicationModel", "Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging",
+  "Media_Control", "Media_Ocr", "Storage_Streams", "UI_Notifications", "UI_Notifications_Management",
+  "Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints", "Win32_Media_DirectShow", "Win32_Media_KernelStreaming", "Win32_Media_MediaFoundation",
+  "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole",
+  "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_Variant", "Win32_System_WinRT",
+  "Win32_UI_Controls_Dialogs", "Win32_UI_Controls_RichEdit", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging",
+] }
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_RemoteDesktop", "Win32_System_Time", "Win32_UI_HiDpi", "Win32_UI_Accessibility",
+  "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_Controls_Dialogs",
+  "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# CPU-bound OCR runs only on demand. Keep the shell's size profile and optimize model inference.
+[profile.release.package.ocrs]
+opt-level = 3
+[profile.release.package.rten]
+opt-level = 3
+[profile.release.package.rten-gemm]
+opt-level = 3
+[profile.release.package.rten-tensor]
+opt-level = 3
+[profile.release.package.rten-imageproc]
+opt-level = 3

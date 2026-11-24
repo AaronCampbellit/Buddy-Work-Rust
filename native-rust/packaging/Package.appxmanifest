@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap7="http://schemas.microsoft.com/appx/manifest/uap/windows10/7"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap7 rescap">
+  <Identity Name="Buddy.Work.Rust.Prototype" Publisher="@PUBLISHER@" Version="@VERSION@" ProcessorArchitecture="x64"/>
+  <Properties>
+    <DisplayName>Buddy Work Rust</DisplayName>
+    <PublisherDisplayName>Buddy Work Prototype</PublisherDisplayName>
+    <Logo>Assets\Store.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0"/>
+  </Dependencies>
+  <Resources><Resource Language="en-US"/></Resources>
+  <Applications>
+    <Application Id="Buddy" Executable="BuddyRust.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Buddy Work Rust" Description="Local Windows activity island"
+        BackgroundColor="transparent" Square44x44Logo="Assets\Tile44.png" Square150x150Logo="Assets\Tile150.png"/>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <uap3:Capability Name="userNotificationListener"/>
+    <uap7:Capability Name="globalMediaControl"/>
+    <rescap:Capability Name="runFullTrust"/>
+    <DeviceCapability Name="webcam"/>
+  </Capabilities>
+</Package>
