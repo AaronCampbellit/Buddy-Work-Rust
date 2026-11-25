@@ -65,7 +65,11 @@ impl State{
     fn local(&self,x:i32,y:i32,w:i32,h:i32)->RECT{rect(self.px(x),self.px(y)-self.scroll.get(),self.px(w),self.px(h))}
     fn client(&self)->RECT{let mut r=RECT::default();unsafe{GetClientRect(self.view.get(),&mut r);}r}
     fn width(&self)->i32{((self.client().right as f32/self.scale.get()).round()as i32).max(1)}
-    fn move_child(&self,id:u16,x:i32,y:i32,w:i32,h:i32){let r=self.local(x,y,w,h);pos(self.hwnd(id),r.left,r.top,r.right-r.left,r.bottom-r.top);}
+    fn move_child(&self,id:u16,x:i32,y:i32,w:i32,h:i32){
+        let r=self.local(x,y,w,h);let child=self.hwnd(id);
+        pos(child,r.left,r.top,r.right-r.left,r.bottom-r.top);
+        show(child,true);
+    }
     fn place(&self){
         let w=self.width();let half=(w-10)/2;let second=half+10;
         self.move_child(POM_SIDE,second+4,10,half-16,20);self.move_child(WATCH_SIDE,second+4,35,half-16,20);

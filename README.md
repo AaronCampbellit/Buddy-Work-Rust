@@ -6,7 +6,7 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.50** · 24.09 MB installer · 45.43 MB installed on Windows 11 x64
+**0.1.1-beta.52** · 24.09 MB installer · 45.43 MB installed on Windows 11 x64
 
 ## Workspaces
 
@@ -161,14 +161,14 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 
 You can select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
 
-**Opening a pinned note.** On our Windows 11 test machine, the island started moving about 0.20 seconds after mouse release and reached full width 0.62–0.65 seconds after the press.
+**Opening a pinned note.** The tabs, note text, and inline image fade in as the island expands. You can edit the note directly once it opens. The Windows 11 recording shows startup, the pinned note, and first-time page changes. [Watch the walkthrough][walkthrough]
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/notes.png">
   <img src="docs/screenshots/island-motion.png" alt="The pinned Coastal trail guide opens into the main Notes editor with its inline image and map link">
 </picture>
 
-**Clicking during a close.** All four clicks during closing reopened the island. Its largest visible closing step in those tests was 90 pixels, down from 482 pixels on beta.48.
+**Clicking during a close.** This beta.49 recording shows the island reversing direction when clicked partway through closing.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/screenshots/home-playing.png">
@@ -191,6 +191,7 @@ Windows encrypts saved notes and clipboard history for the current user. OCR run
 
 Buddy uses Rust and native Win32 controls. Build from `native-rust` on Windows x64. To package the app, extract the matching portable ZIP and pass its `Buddy\camera` folder to the packager. [Build and packaging instructions](native-rust/README.md#build-and-package-on-windows-x64)
 
-[setup]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.50/Buddy-Setup-x64.exe
-[portable]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.50/Buddy-Portable-x64.zip
-[release]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/tag/v0.1.1-beta.50
+[setup]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.52/Buddy-Setup-x64.exe
+[portable]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.52/Buddy-Portable-x64.zip
+[walkthrough]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.52/Buddy-Walkthrough.mp4
+[release]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/tag/v0.1.1-beta.52

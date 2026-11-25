@@ -164,14 +164,19 @@ impl Model {
             let shape=bezier(ms/m.duration,0.2,0.7,0.2,1.0);
             self.p=m.from+(m.target-m.from)*shape;
             // CSS transitions shorten reversals from the current displayed value.
-            // The persistent header and body opacity have their own easing clocks.
+            // The header has its own easing clock.
             let css=|from:f32,duration:f32,delay:f32|{
                 let distance=(m.target-from).abs();
                 if distance==0.0 || ms-delay>=duration*distance{return m.target}
                 from+(m.target-from)*bezier((ms-delay)/(duration*distance),0.25,0.1,0.25,1.0)
             };
             self.header=css(m.header_from,180.0,0.0);
-            self.alpha=if self.expanded{css(m.alpha_from,120.0,40.0)}else{css(m.alpha_from,100.0,0.0)};
+            // Reveal the workspace with the displayed outline, including on a
+            // delayed tick or reversal. A separate opening delay left the
+            // first several expanded frames empty on slower desktops.
+            self.alpha=if self.expanded {
+                m.alpha_from+(1.0-m.alpha_from)*shape
+            }else{css(m.alpha_from,100.0,0.0)};
             if ms>=m.duration && self.header==m.target && self.alpha==m.target {
                 self.p=m.target;
                 self.motion=None;
@@ -410,7 +415,7 @@ mod tests {
         model.first_frame_presented(start);
         model.sample(start+Duration::from_millis(30));
         assert!(model.p>0.20 && model.p<0.6);
-        assert_eq!(model.alpha,0.);
+        assert_eq!(model.alpha,model.p);
         model.sample(start+Duration::from_millis(80));
         let p=model.p;
         let alpha=model.alpha;
@@ -439,7 +444,7 @@ mod tests {
         model.request(true,false);
         model.first_frame_presented(start);
         model.sample(at(35));
-        assert!(model.header>0.0 && model.header<model.p && model.alpha==0.0);
+        assert!(model.header>0.0 && model.header<model.p && model.alpha==model.p);
         model.sample(at(220));
         model.request(false,false);
         model.first_frame_presented(at(220));

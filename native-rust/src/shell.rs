@@ -521,6 +521,11 @@ pub fn deactivated(ui:&Ui,next:HWND){
         INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pointer_seen=true;i.left_at=Some(Instant::now());});
     }
 }
+fn belongs_to_island(island:HWND,hit:HWND)->bool{unsafe{
+    // Geometry alone still matches when another topmost window covers Buddy.
+    // Its side cards and their controls share the island's root owner.
+    !hit.is_null() && GetAncestor(hit,GA_ROOTOWNER)==island
+}}
 pub fn visibility(ui:&mut Ui,check_foreground:bool){
     if ui.locked{return}
     if ui.isolated {
@@ -545,8 +550,9 @@ pub fn visibility(ui:&mut Ui,check_foreground:bool){
     let mut screen=POINT::default();
     if unsafe{GetCursorPos(&mut screen)}==0{return}
     let mut local=screen;unsafe{ScreenToClient(ui.hwnd.0,&mut local);}
-    let body=island::contains(&island::frame(),local.x,local.y);
-    let union=body || side_widgets::contains_screen_point(screen.x,screen.y);
+    let over_buddy=belongs_to_island(ui.hwnd.0,unsafe{WindowFromPoint(screen)});
+    let body=over_buddy && island::contains(&island::frame(),local.x,local.y);
+    let union=body || (over_buddy && side_widgets::contains_screen_point(screen.x,screen.y));
     pointer_at(ui,body,union);
 }
 pub fn copy_text(ui:&Ui,text:&str)->Result<(),String>{unsafe{
@@ -670,4 +676,26 @@ mod pointer_tests {
         p.pointer(now+REOPEN_DELAY,false,false,false,false);
         assert_eq!(p.pointer(now+REOPEN_DELAY,false,true,true,false),(true,false));
     }
+}
+
+#[test]
+#[ignore = "uses a private Windows desktop in its own process"]
+fn hover_accepts_the_island_and_owned_card_controls_only(){
+    crate::workspace::with_private_test_desktop(||unsafe{
+        let window=|owner,style,x|CreateWindowExW(0,windows_sys::w!("BUTTON"),null(),style,
+            x,10,100,70,owner,null_mut(),GetModuleHandleW(null()),null());
+        let island=window(null_mut(),WS_POPUP|WS_VISIBLE,10);
+        let cover=window(null_mut(),WS_POPUP|WS_VISIBLE,10);
+        assert!(!island.is_null() && !cover.is_null());
+        assert!(!belongs_to_island(island,cover));
+        assert!(!belongs_to_island(island,null_mut()));
+        assert!(belongs_to_island(island,island));
+        let card=window(island,WS_POPUP|WS_VISIBLE,125);
+        let edit=window(card,WS_CHILD|WS_VISIBLE,0);
+        assert!(!edit.is_null());
+        assert!(belongs_to_island(island,card));
+        assert!(belongs_to_island(island,edit));
+        DestroyWindow(cover);
+        DestroyWindow(island);
+    });
 }

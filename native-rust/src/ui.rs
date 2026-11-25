@@ -46,7 +46,9 @@ fn label(h:Handle,s:&str){unsafe{SetWindowTextW(h,wide(s).as_ptr());}}
 pub(crate) fn show(h:Handle,v:bool){unsafe{if (GetWindowLongW(h,GWL_STYLE) as u32&WS_VISIBLE!=0)!=v{ShowWindow(h,if v{SW_SHOWNA}else{SW_HIDE});}}}
 fn add(hwnd:Handle,class:&str,name:&str,id:u16,style:u32,edge:u32,font:HFONT)->Handle{
     unsafe {
-        let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|WS_VISIBLE|style,0,0,20,20,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());
+        // A lazy page can be constructed under a visible island. Let layout
+        // position each control before Windows can paint its accessible name.
+        let child=CreateWindowExW(edge,wide(class).as_ptr(),wide(name).as_ptr(),WS_CHILD|style,0,0,0,0,hwnd,id as usize as _,std::ptr::null_mut(),std::ptr::null());
         chrome::scroll::attach(child,style,class=="COMBOBOX");
         if class == "EDIT" { chrome::edit_menu::attach(child); }
         SendMessageW(child,WM_SETFONT,font as usize,1);
