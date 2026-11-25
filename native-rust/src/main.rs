@@ -26,6 +26,14 @@ fn read_ui<T>(read:impl FnOnce(&Ui)->T)->Option<T>{
     WINDOW.with(|cell|{let slot=cell.try_borrow().ok()?;slot.as_ref().map(read)})
 }
 thread_local!{static DEFERRED_PAINT:Cell<HWND>=const{Cell::new(null_mut())};}
+// Selection is committed in the same message, after owner-draw callbacks
+// can read Ui to capture the outgoing page.
+thread_local!{static PAGE_SELECTION:Cell<Option<(HWND,&'static str)>>=const{Cell::new(None)};}
+fn stage_selection(hwnd:HWND,page:&'static str)->bool{
+    if WINDOW.with(|cell|cell.try_borrow().is_err()){
+        PAGE_SELECTION.set(Some((hwnd,page)));true
+    }else{false}
+}
 fn repaint_after_update(hwnd: HWND) {
     if WINDOW.with(|cell| cell.try_borrow().is_err()) {
         DEFERRED_PAINT.set(hwnd);
@@ -38,6 +46,17 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
         true
     });
     if completed{
+        let selection=PAGE_SELECTION.take();
+        let _outgoing=selection.and_then(|(hwnd,_)|unsafe{
+            motion_surface::cover_frame(hwnd,&island::frame())
+        });
+        if let Some((hwnd,page))=selection{
+            WINDOW.with(|slot|{
+                if let Some(ui)=slot.borrow_mut().as_mut().filter(|ui|ui.hwnd.0==hwnd){
+                    ui.navigate(page);
+                }
+            });
+        }
         let repair=DEFERRED_PAINT.replace(null_mut());
         let hwnd=FRAME_TO_PRESENT.replace(null_mut());
         if hwnd.is_null() && !repair.is_null(){unsafe{
@@ -57,7 +76,7 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
                 island::first_frame_presented();
                 return
             }
-            let _handoff=motion_surface::hold_settled_frame(hwnd,&frame);
+            let _handoff=if motion_surface::active(hwnd){motion_surface::cover_frame(hwnd,&frame)}else{None};
             island::apply_region(hwnd,&frame);
             motion_surface::end(hwnd);
             RedrawWindow(hwnd,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);

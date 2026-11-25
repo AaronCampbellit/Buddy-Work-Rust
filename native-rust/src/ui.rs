@@ -247,6 +247,14 @@ impl Ui{
         self.navigation=order;
         self.layout();
     }
+    // User commands that only select a page can wait for the outer dispatch
+    // to present the switch. Commands that edit the destination immediately
+    // use navigate directly.
+    pub(crate) fn switch_page(&mut self,page:&'static str){
+        if self.expanded && !crate::island::frame().animating && !crate::workspace_masked()
+            && crate::stage_selection(self.hwnd.0,page){return}
+        self.navigate(page);
+    }
     pub fn navigate(&mut self,page:&'static str){
         if self.load_page(page){
             self.layout();
@@ -300,7 +308,7 @@ impl Ui{
         if self.home_media_command(id,code) || self.note_command(id,code) || self.handle_workspaces(id,code) || self.preference_command(id,code) || self.editor_command(id,code) || self.device_command(id,code){return}
         if inline_images::command(self,id,code) || WidgetsPage::command(self,id,code){return}
         if self.island_command(id,code){return}
-        if id==NAV && code==LBN_SELCHANGE as u16{let index=unsafe{SendMessageW(self.nav,LB_GETCURSEL,0,0)};if let Some(&p)=self.navigation.get(index as usize){self.navigate(p);}}
+        if id==NAV && code==LBN_SELCHANGE as u16{let index=unsafe{SendMessageW(self.nav,LB_GETCURSEL,0,0)};if let Some(&p)=self.navigation.get(index as usize){self.switch_page(p);}}
         else if id==LIST && code==LBN_DBLCLK as u16 && matches!(self.page,"quick"|"files"|"downloads"|"clipboard"|"markup"){self.run_action("activate");}
         else if id==LIST && (code==LBN_SELCHANGE as u16 || code==LBN_DBLCLK as u16){self.run_action("select");}
         else if (id==INPUT||id==DETAIL||id==inline_images::NOTE_EDITOR) && self.page=="notes"{if code==EN_CHANGE as u16 && self.active_note.is_some(){self.dirty_note=true;}if code==EN_KILLFOCUS as u16 && self.dirty_note{if let Err(e)=core::save_note(self){self.error(&e)}}}

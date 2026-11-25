@@ -72,7 +72,7 @@ impl Ui{
     }
     pub(crate) fn editor_escape(&mut self)->bool{
         if self.page!="rewrite"||!self.expanded{return false}
-        if activity::rewrite_busy(){self.run_action("cancel")}else{self.navigate("clipboard")}
+        if activity::rewrite_busy(){self.run_action("cancel")}else{self.switch_page("clipboard")}
         true
     }
     pub(super) fn layout_editors(&self,visible:bool,r:RECT){
@@ -199,11 +199,11 @@ impl Ui{
         if code!=BN_CLICKED as u16{return true}
         let page=self.page;
         match id{
-            BACK=>self.navigate("clipboard"),
+            BACK=>self.switch_page("clipboard"),
             TONE=>{if let Some(index)=self.choose(s.h(id),&LABELS.iter().map(|v|v.to_string()).collect::<Vec<_>>()){s.preset.set(index);self.layout();}}
             OPTIONS=>{let options=[("result","Show last rewrite"),("status","Check sign-in"),("login","Sign in"),("models","List models"),("settings","Rewrite settings")];
                 if let Some(i)=self.choose(s.h(id),&options.iter().map(|v|v.1.to_string()).collect::<Vec<_>>()){let key=options[i].0;
-                    if key=="settings"{self.navigate("settings")}else{self.run_action(key);if key=="result"{self.editor_rewrite_result(&self.detail());self.layout();}}}}
+                    if key=="settings"{self.switch_page("settings")}else{self.run_action(key);if key=="result"{self.editor_rewrite_result(&self.detail());self.layout();}}}}
             SUBMIT if page=="rewrite"=>{let key=PRESETS[s.preset.get()];self.set_detail(&window_text(s.h(SOURCE),256*1024));self.set_input(&window_text(s.h(PRESET),1000));self.run_action(key);}
             COPY if page=="rewrite"=>{let result=window_text(s.h(RESULT),256*1024);if let Err(e)=workspace::copy_editor_text(self,&result){self.error(&e)}else{self.status("Rewrite copied.");self.layout();}}
             FILE=>self.run_action(if page=="ocr"{"file"}else{"import"}),

@@ -430,8 +430,8 @@ fn show_menu(ui:&mut Ui,mouse:POINT){unsafe{
     item(7,"Quit Buddy");
     SetForegroundWindow(ui.hwnd.0);
     let cmd=crate::chrome::menu::track(ui.hwnd.0,m,TPM_RETURNCMD|TPM_RIGHTBUTTON,mouse.x,mouse.y,ui.appearance);DestroyMenu(m);
-    match cmd{1=>{ui.paused=false;expand(ui,true);},2=>{ui.paused=false;expand(ui,true);ui.navigate("settings");},3=>{ui.paused=!ui.paused;if ui.paused{devices::stop();crate::activity::stop();ShowWindow(ui.hwnd.0,SW_HIDE);}else{if !ui.isolated{devices::restore(&ui.profile);}ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);}side_widgets::sync(ui);core::tick(ui);},
-        4=>hide_temporarily(ui),5=>{let _=core::action(ui,"settings","display");},6=>{expand(ui,true);ui.navigate("diagnostics")},7=>{ui.quitting=true;PostMessageW(ui.hwnd.0,WM_CLOSE,0,0);},8=>{let pin=INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=!i.pinned;i.pinned});if pin{expand(ui,true);}},10..=12 if !ui.paused && !ui.suppressed && !ui.locked=>{
+    match cmd{1=>{ui.paused=false;expand(ui,true);},2=>{ui.paused=false;expand(ui,true);ui.switch_page("settings");},3=>{ui.paused=!ui.paused;if ui.paused{devices::stop();crate::activity::stop();ShowWindow(ui.hwnd.0,SW_HIDE);}else{if !ui.isolated{devices::restore(&ui.profile);}ShowWindow(ui.hwnd.0,SW_SHOWNOACTIVATE);}side_widgets::sync(ui);core::tick(ui);},
+        4=>hide_temporarily(ui),5=>{let _=core::action(ui,"settings","display");},6=>{expand(ui,true);ui.switch_page("diagnostics")},7=>{ui.quitting=true;PostMessageW(ui.hwnd.0,WM_CLOSE,0,0);},8=>{let pin=INTERACTION.with(|i|{let mut i=i.borrow_mut();i.pinned=!i.pinned;i.pinned});if pin{expand(ui,true);}},10..=12 if !ui.paused && !ui.suppressed && !ui.locked=>{
             let key=match cmd{10=>"freeze",11=>"resume",_=>"standby"};
             let msg=devices::call_control(key).unwrap_or_else(|e|e);
             ui.status(&msg);

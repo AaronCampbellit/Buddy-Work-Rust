@@ -146,8 +146,8 @@ unsafe fn settled_surface(hwnd: HWND, frame: &island::Frame) -> Option<Surface> 
     Some(surface)
 }
 
-pub(super) unsafe fn hold_settled_frame(hwnd: HWND, frame: &island::Frame) -> Option<Handoff> {
-    if !active(hwnd) || IsWindowVisible(hwnd)==0 { return None; }
+pub(super) unsafe fn cover_frame(hwnd: HWND, frame: &island::Frame) -> Option<Handoff> {
+    if IsWindowVisible(hwnd)==0 { return None; }
     let surface=settled_surface(hwnd,frame)?;
     {
         let mut window=RECT::default();

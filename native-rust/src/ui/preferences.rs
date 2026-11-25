@@ -141,7 +141,7 @@ impl Ui{
             if matches!(key,"capture"|"update"|"login"|"status"|"download"){
                 v.feedback_row.set(Some((v.category.get(),(id-ROW) as usize)));
             }
-            match key{"reports"=>activity::action(self,"diagnostics","open"),"capture"|"update"|"download"=>activity::action(self,"diagnostics",key),"login"|"status"=>activity::action(self,"rewrite",key),"store"|"relocate"=>workspace::action(self,"files",key),"files"|"rewrite"=>{self.navigate(key);return true},_=>return false}
+            match key{"reports"=>activity::action(self,"diagnostics","open"),"capture"|"update"|"download"=>activity::action(self,"diagnostics",key),"login"|"status"=>activity::action(self,"rewrite",key),"store"|"relocate"=>workspace::action(self,"files",key),"files"|"rewrite"=>{self.switch_page(key);return true},_=>return false}
         }else{return false};
         match result{Ok(msg)=>self.status(&msg),Err(e)=>self.error(&e)}self.layout();true
     }

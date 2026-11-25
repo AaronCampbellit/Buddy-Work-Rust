@@ -49,7 +49,7 @@ impl Ui {
         let mut choices=actions.iter().map(|(_,s)|s.to_string()).collect::<Vec<_>>();
         choices.extend(pages.iter().filter_map(|page|PAGES.iter().find(|p|p.0==*page).map(|p|p.1.to_string())));
         if let Some(i)=self.choose(self.more_go,&choices){
-            if let Some((key,_))=actions.get(i){self.run_action(key)}else if let Some(page)=pages.get(i-actions.len()){self.navigate(page)}
+            if let Some((key,_))=actions.get(i){self.run_action(key)}else if let Some(page)=pages.get(i-actions.len()){self.select_workspace(page)}
         }
     }
     pub(crate) fn select_workspace(&mut self,page:&'static str){
@@ -63,7 +63,7 @@ impl Ui {
         if !self.expanded || self.page==page{return}
         if crate::island::frame().animating || crate::workspace_masked(){
             self.pending_page=Some(page);
-        }else{self.navigate(page);}
+        }else{self.switch_page(page);}
     }
     pub(super) fn island_command(&mut self,id:u16,code:u16)->bool{
         if id==SEARCH && code==EN_CHANGE as u16 && self.page=="notes"{

@@ -466,7 +466,7 @@ impl Ui{
             let labels=options.iter().map(|p|p.1.to_string()).collect::<Vec<_>>();
             let anchor=if matches!(id,VIEW|GRID){s.grid.get()}else{s.hwnd(id)};
             if let Some(i)=self.choose(anchor,&labels){let key=options[i].0;
-                match key{"markup"|"ocr"|"rewrite"|"quick"|"downloads"=>self.navigate(key),
+                match key{"markup"|"ocr"|"rewrite"|"quick"|"downloads"=>self.switch_page(key),
                     "addpath"=>{s.typed_path.set(true);s.form.set(true);s.set_cue(TARGET,r"C:\Path\File");label(s.hwnd(TARGET),"");s.layout();crate::shell::focus(s.hwnd(TARGET));},
                     _=>{self.dispatch_card(if shelf(page){"files"}else{page},None,key);}
                 }
@@ -482,7 +482,7 @@ impl Ui{
             CLEAR=>{self.dispatch_card(page,None,"clear");}
             TOGGLE=>{s.form.set(!s.form.get());s.typed_path.set(false);s.set_cue(TARGET,if s.app.get(){r"C:\Path\App.exe"}else{"https://example.com"});s.layout();if s.form.get(){crate::shell::focus(s.hwnd(NAME))}}
             KIND=>{let labels=vec!["App".into(),"Website".into()];if let Some(i)=self.choose(s.hwnd(id),&labels){s.app.set(i==0);s.set_cue(TARGET,if i==0{r"C:\Path\App.exe"}else{"https://example.com"});s.layout();}}
-            DOWNLOADS=>self.navigate("downloads"),
+            DOWNLOADS=>self.switch_page("downloads"),
             FILES|FOLDER|CHOOSE|ADD=>{
                 let typed=s.typed_path.get();let app=s.app.get();let title=window_text(s.hwnd(NAME),120);let target=window_text(s.hwnd(TARGET),32768);
                 let (section,key)=match id{FILES=>("files","pick"),FOLDER=>("files","folder"),CHOOSE=>("quick","app"),_ if typed=>("files","addpath"),_ if app=>("quick","addapp"),_=>("quick","addweb")};

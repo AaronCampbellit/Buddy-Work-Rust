@@ -221,7 +221,7 @@ impl Ui{
         let Some(i)=id.checked_sub(BASE).map(usize::from).filter(|i|*i<NAMES.len())else{return false};
         let Some(v)=self.devices_view.get()else{return false};let anchor=v.buttons[i];
         match i{
-            0..=3=>{if i<2{v.output.set(i==1);v.selected.set(usize::MAX);}self.navigate(["audio","audio","camera","studio"][i]);}
+            0..=3=>{if i<2{v.output.set(i==1);v.selected.set(usize::MAX);}self.switch_page(["audio","audio","camera","studio"][i]);}
             4=>self.run_action("refresh"),
             5=>{if let Err(e)=activity::open(if self.page=="audio"{"ms-settings:sound"}else{"ms-settings:camera"}){self.error(&e);}}
             6..=11=>{
@@ -263,7 +263,7 @@ impl Ui{
                         self.run_action(key);
                     }
                 }}
-            17=>self.run_action(if devices::studio_state().0{"stop"}else{"start"}),19=>self.navigate("home"),_=>{}
+            17=>self.run_action(if devices::studio_state().0{"stop"}else{"start"}),19=>self.switch_page("home"),_=>{}
         }true
     }
     fn advanced_studio(&mut self,anchor:Handle,key:&str,name:&str){
