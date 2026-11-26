@@ -46,17 +46,7 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
         true
     });
     if completed{
-        let selection=PAGE_SELECTION.take();
-        let _outgoing=selection.and_then(|(hwnd,_)|unsafe{
-            motion_surface::cover_frame(hwnd,&island::frame())
-        });
-        if let Some((hwnd,page))=selection{
-            WINDOW.with(|slot|{
-                if let Some(ui)=slot.borrow_mut().as_mut().filter(|ui|ui.hwnd.0==hwnd){
-                    ui.navigate(page);
-                }
-            });
-        }
+        if let Some((hwnd,page))=PAGE_SELECTION.take(){unsafe{present_selection(hwnd,page);}}
         let repair=DEFERRED_PAINT.replace(null_mut());
         let hwnd=FRAME_TO_PRESENT.replace(null_mut());
         if hwnd.is_null() && !repair.is_null(){unsafe{
@@ -69,7 +59,7 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
             let frame=island::frame();
             if (frame.animating || workspace_masked()) && motion_surface::present(hwnd,&frame){
                 island::apply_region(hwnd,&frame);
-                if frame.animating { motion_surface::synchronize_frame(hwnd); }
+                if frame.animating { shell::after_motion_present(hwnd); }
                 // Widget and tray commands can select a workspace after asking
                 // to expand. Start the clock once that first frame is actually
                 // drawn with the final destination staged.
@@ -82,6 +72,46 @@ fn with_ui(f:impl FnOnce(&mut Ui)){
             RedrawWindow(hwnd,null(),null_mut(),RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
             island::first_frame_presented();
         }}
+    }
+}
+// Keep the last presented frame intact while staging the real controls.
+// Present the destination before its individual child windows repaint.
+unsafe fn present_selection(hwnd:HWND,page:&'static str){
+    let trace=read_ui(|ui|{
+        (ui.isolated && std::env::var_os("BUDDY_TRACE_PAGES").is_some_and(|v|v=="1"))
+            .then(||ui.profile.join("tab-timings.csv"))
+    }).flatten();
+    let start=std::time::Instant::now();
+    let visible=IsWindowVisible(hwnd)!=0;
+    if visible{SendMessageW(hwnd,WM_SETREDRAW,0,0);}
+    let mut loaded=start.elapsed();
+    WINDOW.with(|slot|{
+        if let Some(ui)=slot.borrow_mut().as_mut().filter(|ui|ui.hwnd.0==hwnd){
+            let changed=ui.load_page(page);
+            loaded=start.elapsed();
+            if changed{ui.layout();}
+        }
+    });
+    let arranged=start.elapsed();
+    let incoming=if visible{
+        // WM_SETREDRAW makes IsWindowVisible false, but the offscreen print
+        // uses the visibility each child has in the destination layout.
+        let frame=motion_surface::cover_staged(hwnd,&island::frame());
+        SendMessageW(hwnd,WM_SETREDRAW,1,0);
+        frame
+    }else{None};
+    let captured=start.elapsed();
+    DEFERRED_PAINT.set(null_mut());
+    RedrawWindow(hwnd,null(),null_mut(),RDW_FRAME|RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
+    let painted=start.elapsed();
+    drop(incoming);
+    if let Some(path)=trace{
+        use std::{fs::OpenOptions,io::Write};
+        let released=start.elapsed();
+        if let Ok(mut f)=OpenOptions::new().create(true).append(true).open(path){
+            let _=writeln!(f,"{page},{},{},{},{},{}",(captured-arranged).as_micros(),loaded.as_micros(),
+                (arranged-loaded).as_micros(),(painted-captured).as_micros(),(released-painted).as_micros());
+        }
     }
 }
 fn present_frame(hwnd:HWND){
@@ -179,7 +209,13 @@ unsafe fn print_children(hwnd:HWND,dc:HDC,workspace:Option<bool>){
     // Enumerating the controls outside the Ui borrow lets WM_DRAWITEM and
     // WM_CTLCOLOR enter the owner normally when the children print themselves.
     let mut windows=Vec::new();
-    let mut child=GetTopWindow(hwnd);
+    // Only the compact controls and toolbar can be live above a moving
+    // workspace. Avoid a Win32 style/ID query for every hidden page child.
+    let header=if workspace==Some(false){read_ui(|ui|ui.motion_controls())}else{None};
+    if let Some(header)=header{
+        windows.extend(header.into_iter().filter(|&h|GetWindowLongW(h,GWL_STYLE) as u32 & WS_VISIBLE!=0));
+    }
+    let mut child=if header.is_some(){null_mut()}else{GetTopWindow(hwnd)};
     while !child.is_null(){
         // The private print target may have a hidden ancestor (e.g. signed out).
         // Print the children the layout marked visible on their own HWND.
@@ -297,6 +333,10 @@ unsafe extern "system" fn window_proc(hwnd:HWND,msg:u32,wp:usize,lp:isize)->isiz
         WM_NOTIFY if wp==inline_images::NOTE_EDITOR as usize=>inline_images::link_notification(hwnd,lp),
         shell::OPEN_WIDGET_NOTE=>{with_ui(side_widgets::finish_widget_open);0},
         side_widgets::MESSAGE=>{with_ui(|u|side_widgets::command(u,wp));0},
+        shell::NEXT_MOTION_FRAME=>{
+            if shell::take_motion_frame() && island::frame().animating{with_ui(shell::animate);}
+            0
+        },
         shell::COMMIT_PAGE=>{with_ui(shell::finish_navigation);0},
         devices::OCR_DONE=>{with_ui(devices::finish_scan);0},
         WM_HSCROLL=>{with_ui(|u|u.home_seek_scroll(lp as _,wp as u16));0},

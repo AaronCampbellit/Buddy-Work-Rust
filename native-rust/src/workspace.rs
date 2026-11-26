@@ -251,7 +251,7 @@ fn detail(ui:&Ui,page:&str,row:&[String]){
 }
 pub fn render(ui:&mut Ui,page:&str)->String{
     let indexes=indexes(ui,page);if page=="clipboard"&&indexes.is_empty(){crate::inline_images::set_clipboard(ui,None);}let captions=indexes.iter().map(|i|caption(page,&ui.records[key(page)][*i])).collect::<Vec<_>>();
-    ui.set_rows(&captions);ui.set_detail("");if let Some(i)=indexes.first(){ui.select_row(0);detail(ui,page,&ui.records[key(page)][*i]);}
+    ui.set_rows(&captions);if let Some(i)=indexes.first(){ui.select_row(0);detail(ui,page,&ui.records[key(page)][*i]);}else{ui.set_detail("");}
     ui.refresh_workspaces();
     match page{"clipboard"=>"Clipboard history","markup"=>"Choose a clipboard image, import a file, or paste an image.","quick"=>"Enter a website URL and label to create a pin.","files"=>"Drop files here to link them or save independent copies.","downloads"=>"Recent downloads and partial-file sizes.",_=>""}.into()
 }

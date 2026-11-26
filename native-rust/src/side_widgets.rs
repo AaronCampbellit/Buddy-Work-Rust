@@ -50,16 +50,12 @@ fn time(ms:u64,precise:bool)->String {
     let base=if sec>=3600 {format!("{}:{:02}:{:02}",sec/3600,(sec/60)%60,sec%60)}else{format!("{:02}:{:02}",sec/60,sec%60)};
     if precise {format!("{base}.{:01}",(ms/100)%10)} else {base}
 }
-fn note_row(ui:&Ui)->Option<&Vec<String>>{
-    let id=core::setting(ui,"noteWidget","");
-    ui.records.get("notes")?.iter().find(|r|r.len()>=7&&!id.is_empty()&&r[0]==id)
-}
 fn clip_row(ui:&Ui)->Option<&Vec<String>>{
     let selected=ui.records.get("clipboard_widget")?.first()?;
     ui.records.get("clipboard")?.iter().find(|r|get(r,0)==get(selected,0)&&get(r,1)==get(selected,1))
 }
 fn identity(ui:&Ui,k:Kind)->String{
-    match k {Kind::Note=>note_row(ui).map(|r|r[0].clone()).unwrap_or_default(),
+    match k {Kind::Note=>core::widget_note(ui).map(|r|r[0].clone()).unwrap_or_default(),
         Kind::Clip=>clip_row(ui).map(|r|format!("{}:{}",get(r,0),get(r,1))).unwrap_or_default(),_=>String::new()}
 }
 fn model(ui:&Ui,k:Kind)->Content{
@@ -84,8 +80,8 @@ fn model(ui:&Ui,k:Kind)->Content{
             m.body=laps.iter().enumerate().rev().take(3).map(|(i,row)|format!("Lap {}     {}",i+1,time(get(row,0).parse().unwrap_or(0),true))).collect::<Vec<_>>().join("\r\n");
             if m.body.is_empty(){m.body="Lap times will appear here.".into();}
         }
-        Kind::Note=>if let Some(row)=note_row(ui){
-            m.id=identity(ui,k);m.title=row[1].clone();m.body=row[2].clone();m.pinned=row[3]=="1";
+        Kind::Note=>if let Some(row)=core::widget_note(ui){
+            m.id=row[0].clone();m.title=row[1].clone();m.body=row[2].clone();m.pinned=row[3]=="1";
             m.has_reminder=!row[5].is_empty();m.meta=if m.has_reminder {Ui::formatted_note_date(&row[5])}else{"mm/dd/yyyy,  --:-- --".into()};
             m.extra=Ui::formatted_note_date(&row[6]);
             m.format=inline_images::saved_format(&ui.records,&m.id);
@@ -140,7 +136,7 @@ impl Thumbnail {
         Some(Self{width,height,bgra})
     }
 }
-struct Card {kind:Kind, handle:HWND,rich:Option<Controls>, controls:Vec<(Spec,HWND)>, data:Content, image:Option<Thumbnail>, unscrolled:Bounds, area:Bounds, scroll_y:i32,watch_sample:Option<(std::time::Instant,u64)>}
+struct Card {kind:Kind, handle:HWND,rich:Option<Controls>, controls:Vec<(Spec,HWND)>, data:Content, note_revision:Option<u64>, image:Option<Thumbnail>, unscrolled:Bounds, area:Bounds, scroll_y:i32,watch_sample:Option<(std::time::Instant,u64)>}
 struct Strip {wheel_y:crate::ui::WheelMotion,wheel_x:crate::ui::WheelMotion,handle:HWND,parent:HWND,cards:Vec<Card>, viewport:Bounds, offset:i32, scale:f32, palette:(u32,u32,u32,u32),
     fonts:[HFONT;8], previous:HWND,next:HWND, shown:bool, opacity:u8, nav_bounds:[Bounds;2], notice:Option<(Kind,String,std::time::Instant)>}
 struct Draft {id:String,previous_title:String,previous_body:String,previous_images:Vec<Placement>,previous_format:Option<String>,title:String,body:String,images:Vec<Placement>,format:Option<String>}
@@ -215,7 +211,7 @@ impl Strip{
             if edit{SendMessageW(btn,0x00c5,if s.id==TITLE{32768}else{256*1024},0);SendMessageW(btn,0x1501,1,wide(if s.id==TITLE{"Untitled note"}else{s.label}).as_ptr()as isize);}
             (s,btn)
         }).collect();
-        Some(Card{kind,handle:h,rich,controls,data:Content::default(),image:None,unscrolled:Bounds::default(),area:Bounds::default(),scroll_y:0,watch_sample:None})
+        Some(Card{kind,handle:h,rich,controls,data:Content::default(),note_revision:None,image:None,unscrolled:Bounds::default(),area:Bounds::default(),scroll_y:0,watch_sample:None})
     }
     fn max_offset(&self)->i32{self.cards.last().map_or(0,|c|(c.unscrolled.right()-self.viewport.w).max(0))}
     unsafe fn update(&mut self,ui:&Ui,view:Bounds,items:&[(Widget,RECT)]){
@@ -236,6 +232,14 @@ impl Strip{
             let mut c=if let Some(i)=old.iter().position(|c|c.kind==k){old.remove(i)}else{let Some(c)=self.add_card(k)else{continue};geometry=true;c};
             let mut b=Bounds::rect(r);b.x-=view.x;b.y-=view.y;
             if b!=c.unscrolled{c.unscrolled=b;geometry=true;}
+            if k==Kind::Note {
+                let revision=ui.records.preview_revision();
+                if c.note_revision==Some(revision) && !restyle {
+                    self.cards.push(c);
+                    continue;
+                }
+                c.note_revision=Some(revision);
+            }
             let data=model(ui,k);
             if k==Kind::Clip && data.kind!=c.data.kind{geometry=true;}
             if k==Kind::Watch {
@@ -251,7 +255,7 @@ impl Strip{
                     let pending=DRAFT.with(|d|d.borrow().as_ref().is_some_and(|s|s.id==data.id));
                     if !pending{
                         set_text(GetDlgItem(c.handle,TITLE as i32),&data.title);
-                        if let (Some(editor),Some(row))=(&c.rich,note_row(ui)){
+                        if let (Some(editor),Some(row))=(&c.rich,core::widget_note(ui)){
                             let matches=editor.contents().is_ok_and(|(s,p)|s==data.body&&p==data.placements);
                             if !matches || (c.data.format!=data.format && editor.format().ok().as_ref()!=Some(&data.format)) {if let Err(e)=editor.load_row(ui,row){self.notice=Some((k,e,std::time::Instant::now()));}}
                         }
@@ -378,7 +382,7 @@ pub fn sync(ui:&mut Ui){
     let available=!ui.locked && !ui.paused && !ui.suppressed && ui.hidden_until.is_none();
     if !available{ui.pending_widget_note=None;crate::note_preview::clear();}
     else if !ui.expanded && !geometry.animating{
-        if let Some(row)=note_row(ui).filter(|_|geometry.widgets.iter().any(|(kind,_)|*kind==Widget::Note)){
+        if let Some(row)=core::widget_note(ui).filter(|_|geometry.widgets.iter().any(|(kind,_)|*kind==Widget::Note)){
             crate::note_preview::warm(ui,&row[0]);
         }else{crate::note_preview::clear();}
     }else if ui.pending_widget_note.is_none(){crate::note_preview::clear();}
@@ -909,7 +913,7 @@ fn flush_note(ui:&mut Ui,refresh_main:bool)->Result<(),String>{
 }
 fn open(ui:&mut Ui,page:&'static str){shell::expand_from_side(ui);if ui.expanded{ui.navigate(page);}}
 fn note_action(ui:&mut Ui,mut id:u16)->Result<String,String>{
-    let r=note_row(ui).cloned().ok_or("This note is no longer shown.")?;
+    let r=core::widget_note(ui).cloned().ok_or("This note is no longer shown.")?;
     let i=ui.records["notes"].iter().position(|n|n.first()==r.first()).ok_or("The note is gone.")?;
     if id==413{
         id=unsafe{

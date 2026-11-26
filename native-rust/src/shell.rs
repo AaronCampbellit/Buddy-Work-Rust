@@ -76,6 +76,24 @@ pub fn palette(ui:&Ui)->(u32,u32,u32,u32){
     }
 }
 pub const MOTION_TIMER:usize=9;
+pub const NEXT_MOTION_FRAME:u32=WM_APP+47;
+thread_local!{static FRAME_QUEUED:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+pub fn take_motion_frame()->bool{
+    // GetMessage dispatches posted messages ahead of hardware input. Leave
+    // queued mouse and keyboard events to the dispatcher before another draw.
+    FRAME_QUEUED.replace(false) && !motion_input_waiting()
+}
+fn motion_input_waiting()->bool{unsafe{GetQueueStatus(QS_INPUT)>>16!=0}}
+pub unsafe fn after_motion_present(hwnd:HWND){
+    // The compositor has already paced this frame. Give the message loop a
+    // chance to dispatch input, then start the next draw without another
+    // low-priority timer interval. Use the regular timer if DWM did not wait.
+    let start=Instant::now();
+    crate::motion_surface::synchronize_frame(hwnd);
+    if start.elapsed()>=Duration::from_millis(4) && !FRAME_QUEUED.get() && !motion_input_waiting(){
+        FRAME_QUEUED.set(PostMessageW(hwnd,NEXT_MOTION_FRAME,0,0)!=0);
+    }
+}
 const GRACE:Duration=Duration::from_millis(300);
 const REOPEN_DELAY:Duration=Duration::from_millis(1_200);
 
@@ -101,8 +119,7 @@ fn widget_list(ui:&Ui)->Vec<island::Widget>{
     if ui.call_state.is_some(){cards.push(Camera);}
     if core::widget_enabled(ui,"pomWidget","pomEnd"){cards.push(Focus);}
     if core::widget_enabled(ui,"watchWidget","watchStart"){cards.push(Stopwatch);}
-    let pinned=core::setting(ui,"noteWidget","");
-    if !pinned.is_empty() && ui.records.get("notes").is_some_and(|notes|notes.iter().any(|n|n.first().is_some_and(|id|id==pinned))){cards.push(Note);}
+    if core::widget_note(ui).is_some(){cards.push(Note);}
     if !crate::workspace::widget_text(ui).is_empty(){cards.push(Clipboard);}
     cards
 }

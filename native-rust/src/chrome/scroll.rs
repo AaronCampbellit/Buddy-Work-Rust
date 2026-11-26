@@ -42,7 +42,7 @@ unsafe extern "system" fn lifetime(window: HWND, msg: u32, wp: usize, lp: isize,
     DefSubclassProc(window, msg, wp, lp)
 }
 
-unsafe fn register(window: HWND) {
+pub(crate) unsafe fn register_themed_window(window: HWND) {
     if window.is_null() || WINDOWS.with_borrow(|windows| windows.contains(&window)) { return; }
     if SetWindowSubclass(window, Some(lifetime), 1, 0) == 0 { return; }
     WINDOWS.with_borrow_mut(|windows| windows.push(window));
@@ -51,10 +51,10 @@ unsafe fn register(window: HWND) {
 
 pub(crate) unsafe fn attach(window: HWND, style: u32, combo: bool) {
     if style & (WS_VSCROLL | WS_HSCROLL) == 0 || window.is_null() { return; }
-    register(window);
+    register_themed_window(window);
     if combo {
         let mut info = COMBOBOXINFO { cbSize: size_of::<COMBOBOXINFO>() as _, ..Default::default() };
-        if GetComboBoxInfo(window, &mut info) != 0 { register(info.hwndList); }
+        if GetComboBoxInfo(window, &mut info) != 0 { register_themed_window(info.hwndList); }
     }
 }
 

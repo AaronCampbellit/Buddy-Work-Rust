@@ -20,7 +20,51 @@ pub(super) fn fonts(scale:f32)->Vec<HFONT>{
     }).collect()
 }
 
+pub(super) fn install_header_tips(owner:Handle, header:&[Handle], compact_bell:Handle, collapse:Handle) {
+    use windows_sys::Win32::UI::Controls::*;
+    use std::{mem::size_of,ptr::{null,null_mut}};
+    unsafe {
+        let init=INITCOMMONCONTROLSEX{dwSize:size_of::<INITCOMMONCONTROLSEX>() as _,dwICC:ICC_BAR_CLASSES};
+        InitCommonControlsEx(&init);
+        let tips=CreateWindowExW(WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,TOOLTIPS_CLASSW,null(),
+            WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,0,0,0,0,owner,null_mut(),null_mut(),null());
+        if tips.is_null(){return}
+        chrome::scroll::register_themed_window(tips);
+        let names=[windows_sys::w!("Recent notifications"),windows_sys::w!("Widgets"),windows_sys::w!("Devices"),
+            windows_sys::w!("Settings"),windows_sys::w!("Recent notifications"),windows_sys::w!("Collapse island")];
+        for (button,name) in header.iter().copied().chain([compact_bell,collapse]).zip(names) {
+            let tool=TTTOOLINFOW{cbSize:size_of::<TTTOOLINFOW>() as _,uFlags:TTF_IDISHWND|TTF_SUBCLASS|TTF_TRANSPARENT,
+                hwnd:owner,uId:button as usize,lpszText:name.cast_mut(),..Default::default()};
+            SendMessageW(tips,TTM_ADDTOOLW,0,&tool as *const _ as _);
+        }
+    }
+}
+
 impl Ui {
+    fn current_header_page(&self)->&str {
+        match self.page {
+            "audio"|"camera"|"studio"|"media"=>"audio",
+            "settings"|"diagnostics"=>"settings",
+            page=>page,
+        }
+    }
+
+    fn update_header_names(&self) {
+        // Preserve the native button name and announce which workspace is open
+        // when a screen reader encounters an icon-only tool.
+        let current=self.current_header_page();
+        for (button,(page,name,_)) in self.header.iter().zip(HEADER.iter()) {
+            let active=current==*page;
+            let key=windows_sys::w!("BuddyCurrentTool");
+            unsafe {
+                let was_active=!GetPropW(*button,key).is_null();
+                if was_active==active {continue}
+                if active {SetPropW(*button,key,1usize as _); label(*button,&format!("{name}, current page"));}
+                else {RemovePropW(*button,key); label(*button,name);}
+            }
+        }
+    }
+
     pub(super) fn scale(&self)->f32 {crate::shell::dpi(self.hwnd.0) as f32/96.0*self.zoom as f32/100.0}
     pub(super) fn px(&self,n:i32)->i32 {(n as f32*self.scale()).round() as i32}
     fn home_record(&self)->Option<&Vec<String>>{
@@ -179,6 +223,7 @@ impl Ui {
             let origin=if workspace_child(id){content}else{body};
             batch.place(handle,on,origin.left+x,origin.top+y,w,h);
         };
+        self.update_header_names();
         self.layout_motion_header();
         let inner=w-p(60);
         let navigation=self.navigation_slots(content);
@@ -369,8 +414,10 @@ impl Ui {
             face=if active{mix(bg,accent,25)}else if hot{mix(bg,ink,16)}else{bg};
             line=face;color=if active{accent}else{muted};
         }else if let Some(tool)=id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)){
-            icon_only=true;glyph=Some(tool.2);size=p(18);color=if tool.0=="notifications"{accent}else{muted};
-            face=if hot||self.page==tool.0{mix(bg,ink,16)}else{bg};line=face;
+            let active=tool.0==self.current_header_page();
+            icon_only=true;glyph=Some(tool.2);size=p(18);
+            color=if active || tool.0=="notifications"{accent}else{muted};
+            face=if active{mix(bg,accent,30)}else if hot{mix(bg,ink,16)}else{bg};line=face;
         }else if id==COMPACT_TOOLS || id==COLLAPSE{
             icon_only=true;glyph=Some(if id==COLLAPSE{Icon::Up}else{Icon::Bell});size=if id==COLLAPSE{p(17)}else{p(18)};
             color=if id==COLLAPSE{muted}else{accent};face=if hot{mix(bg,ink,16)}else{bg};line=face;
@@ -425,6 +472,10 @@ impl Ui {
         if focus{line=accent;}
         fill(dc,r,canvas);panel(dc,r,p(if id>=TAB && id<TAB+4{8}else{6}),face,line);
         if id==HOME_PICK {icon(dc,r.right-p(18),r.top+(th-p(14))/2,p(14),Icon::Down,muted,face);}
+        if id.checked_sub(HEAD).and_then(|i|HEADER.get(i as usize)).is_some_and(|tool|tool.0==self.current_header_page()) {
+            let marker=rect(r.left+(tw-p(10))/2,r.bottom-p(4),p(10),p(2).max(1));
+            fill(dc,marker,accent);
+        }
         if icon_only {if let Some(g)=glyph{icon(dc,r.left+(tw-size)/2,r.top+(th-size)/2,size,g,color,face);}return true}
         let text_width=chrome::width(dc,&name,font);
         let block=(text_width+if glyph.is_some(){size+p(6)}else{0}).min(tw-p(8));

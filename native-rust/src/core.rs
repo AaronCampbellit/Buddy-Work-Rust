@@ -30,10 +30,31 @@ fn fill_note(ui:&mut Ui){
     ui.dirty_note=false;
 }
 pub(crate) fn note_rows(ui:&mut Ui){
+    update_note_list(ui,false);
+}
+fn update_note_list(ui:&mut Ui,can_reuse_captions:bool){
+    let revision=ui.records.preview_revision();
+    if ui.note_list_model.as_ref().is_some_and(|(rev,query)|*rev==revision&&query==&ui.search){
+        // A widget can request another active note on an unchanged list.
+        let selected=ui.active_note.as_ref().and_then(|id|ui.note_ids.iter().position(|item|item==id));
+        if selected!=ui.selected(){unsafe{
+            windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(ui.list,
+                windows_sys::Win32::UI::WindowsAndMessaging::LB_SETCURSEL,selected.unwrap_or(usize::MAX),0);
+        }}
+        return
+    }
     let scroll_anchor=ui.note_scroll_anchor();
     let q=ui.search.to_lowercase();
     let mut notes=ui.records.get("notes").into_iter().flatten().filter(|r|r.len()>=7).filter(|r|q.is_empty()||show(r,1).to_lowercase().contains(&q)||show(r,2).to_lowercase().contains(&q)).collect::<Vec<_>>();
     notes.sort_by(|a,b|show(b,3).cmp(show(a,3)).then_with(||show(b,6).cmp(show(a,6))));
+    // Focus loss commits the active RichEdit document before a tab click.
+    // Preserve the live list (and its selected item and scroll position) when
+    // saving a body edit changed neither row order nor accessible captions.
+    ui.note_list_model=Some((revision,ui.search.clone()));
+    if can_reuse_captions && notes.iter().map(|r|&r[0]).eq(ui.note_ids.iter()){
+        unsafe{windows_sys::Win32::Graphics::Gdi::InvalidateRect(ui.list,std::ptr::null(),0);}
+        return
+    }
     let rows=notes.iter().map(|n|format!("{}{}{}",if show(n,3)=="1"{"★  "}else{""},if show(n,1).is_empty(){"Untitled note"}else{show(n,1)},if show(n,5).is_empty(){""}else{"   ⏱"})).collect::<Vec<_>>();
     ui.note_ids=notes.iter().map(|n|n[0].clone()).collect();ui.set_rows(&rows);
     if let Some(i)=ui.active_note.as_ref().and_then(|id|ui.note_ids.iter().position(|s|s==id)){ui.select_row(i);}
@@ -49,7 +70,18 @@ fn save_note_inner(ui:&mut Ui,keep_empty:bool)->Result<(),String>{
     let format=ui.images.format()?;
     let mut inserted=false;
     let i=match note_index(ui){
-        Some(index)=>index,
+        Some(index)=>{
+            let row=&ui.records["notes"][index];
+            let stored_format=ui.records.get(&crate::inline_images::format_key(&id))
+                .and_then(|rows|rows.first()).and_then(|r|r.first());
+            if row[1]==title && row[2]==body && stored_format==format.as_ref()
+                && crate::inline_images::placements(row,ui.records.get(&crate::inline_images::offset_key(&id)))==images {
+                ui.dirty_note=false;
+                ui.new_note=false;
+                return Ok(());
+            }
+            index
+        }
         None if ui.new_note=>{
             if !keep_empty && title.trim().is_empty() && body.trim().is_empty() && images.is_empty(){
                 ui.dirty_note=false;
@@ -65,6 +97,7 @@ fn save_note_inner(ui:&mut Ui,keep_empty:bool)->Result<(),String>{
         }
         None=>return Err("Select a note first.".into()),
     };
+    let captions_unchanged=!inserted && ui.records["notes"][i].get(1)==Some(&title);
     if let Err(reason)=write_note(ui,i,title,body,&images,format){
         if inserted{ui.records.get_mut("notes").unwrap().remove(i);}
         ui.dirty_note=true;
@@ -72,7 +105,7 @@ fn save_note_inner(ui:&mut Ui,keep_empty:bool)->Result<(),String>{
     }
     ui.dirty_note=false;
     ui.new_note=false;
-    note_rows(ui);
+    update_note_list(ui,captions_unchanged);
     Ok(())
 }
 pub(crate) fn write_note(ui:&mut Ui,i:usize,title:String,body:String,images:&[crate::inline_images::Placement],format:Option<String>)->Result<(),String>{
@@ -96,7 +129,7 @@ pub(crate) fn write_note(ui:&mut Ui,i:usize,title:String,body:String,images:&[cr
 }
 pub(crate) struct DeletedNote {
     pub(crate) row: Vec<String>,
-    metadata: crate::storage::Records,
+    metadata: std::collections::BTreeMap<String, Vec<Vec<String>>>,
 }
 pub(crate) fn delete_note(ui: &mut Ui, index: usize) -> Result<(), String> {
     let row = ui.records.get_mut("notes").unwrap().remove(index);
@@ -327,7 +360,19 @@ pub(crate) fn widget_enabled(ui:&Ui,key:&str,running:&str)->bool{
     if setting(ui,"widgets","on")!="on"{return false;}
     match setting(ui,key,"auto"){"on"=>true,"off"=>false,_=>val(ui,running,0)>0}
 }
-fn widget_caption(ui:&Ui)->String{if setting(ui,"widgets","on")!="on"{return String::new()}let id=setting(ui,"noteWidget","");let note=ui.records.get("notes").into_iter().flatten().find(|r|show(r,0)==id).map(|r|show(r,1)).unwrap_or("");let clipboard=crate::workspace::widget_text(ui);[note,clipboard.as_str()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join("  ·  ")}
+pub(crate) fn widget_note(ui:&Ui)->Option<&Vec<String>> {
+    thread_local! {static PINNED_INDEX:std::cell::Cell<(u64,Option<usize>)>=const {std::cell::Cell::new((0,None))};}
+    let revision=ui.records.preview_revision();
+    let (cached_revision,mut index)=PINNED_INDEX.get();
+    if cached_revision!=revision {
+        let id=setting(ui,"noteWidget","");
+        index=if id.is_empty(){None}else{ui.records.get("notes").and_then(|rows|
+            rows.iter().position(|row|row.len()>=7 && row[0]==id))};
+        PINNED_INDEX.set((revision,index));
+    }
+    ui.records.get("notes")?.get(index?)
+}
+fn widget_caption(ui:&Ui)->String{if setting(ui,"widgets","on")!="on"{return String::new()}let note=widget_note(ui).map(|r|show(r,1)).unwrap_or("");let clipboard=crate::workspace::widget_text(ui);[note,clipboard.as_str()].into_iter().filter(|s|!s.is_empty()).collect::<Vec<_>>().join("  ·  ")}
 pub(crate) fn due_title(ui:&Ui)->Option<String>{
     let id=ui.due_note.as_ref()?;
     let row=ui.records.get("notes")?.iter().find(|r|r.first()==Some(id))?;
@@ -417,7 +462,11 @@ mod tests {
                 assert_eq!(ui.records["notes"][0][1],"Synthetic café");
                 assert_eq!(ui.records["notes"][0][2],"Generated test body");
                 assert_eq!(crate::storage::load(&ui.profile).unwrap(),ui.records);
-                let file=std::fs::read(path).unwrap();
+                let file=std::fs::read(&path).unwrap();
+                ui.dirty_note=true; // Edit followed by undo or redundant EN_CHANGE.
+                save_note(ui).unwrap();
+                assert!(!ui.dirty_note);
+                assert_eq!(std::fs::read(&path).unwrap(),file,"unchanged editor rewrote the encrypted profile");
                 assert!(!file.windows(9).any(|s|s==b"Synthetic"));
                 edit_note(ui,"pin").unwrap(); assert_eq!(ui.records["notes"][0][3],"1");
                 edit_note(ui,"remind").unwrap(); assert!(ui.records["notes"][0][5].parse::<u64>().unwrap()>now());

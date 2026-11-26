@@ -60,7 +60,7 @@ pub(super) unsafe fn draw(dc:HDC,r:RECT,name:&str,font:HFONT,color:u32,flags:u32
     let limit=r.right-r.left;
     LABELS.with(|slot|{
         let Ok(mut cache)=slot.try_borrow_mut()else{return false};if cache.dc.is_null(){return false}
-        let existing=cache.items.iter().position(|m|m.name==name && m.limit==limit && m.color==color && m.font.height==lf.lfHeight && m.font.weight==lf.lfWeight && m.font.face==lf.lfFaceName);
+        let existing=cache.items.iter().position(|m|m.name==name && (m.limit==limit || (m.w<m.limit && m.w<=limit)) && m.color==color && m.font.height==lf.lfHeight && m.font.weight==lf.lfWeight && m.font.face==lf.lfFaceName);
         if let Some(i)=existing{let m=cache.items.remove(i).unwrap();cache.items.push_front(m);}
         else{
             let Some(m)=cache.raster(lf,name,limit,color)else{return false};

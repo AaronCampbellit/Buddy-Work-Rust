@@ -22,6 +22,7 @@ pub(crate) const RESIZE_HANDLE:u16=187;
 pub(crate) fn workspace_child(id:i32)->bool { !matches!(id,105|108|180..=183|187) }
 pub(crate) const NAV:u16=100;
 pub(crate) const LIST:u16=101;
+const INACTIVE_LIST:u16=109;
 pub(crate) const INPUT:u16=102;
 pub(crate) const DETAIL:u16=103;
 pub(crate) const COMPACT:u16=105;
@@ -142,6 +143,7 @@ pub struct Ui {
     pub(crate) collapsed_at:Option<Instant>,pub(crate) opened_by_hover:bool,pub(crate) hidden_until:Option<Instant>,
     pub(crate) camera_check:Instant,pub(crate) call_state:Option<String>,pub(crate) locked:bool,pub(crate) suppressed:bool,pub(crate) new_note:bool,pub(crate) dirty_note:bool,pub(crate) due_note:Option<String>,
     pub(crate) active_note:Option<String>,pub(crate) search:String,pub(crate) note_ids:Vec<String>,
+    pub(crate) note_list_model:Option<(u64,String)>,note_list:Handle,utility_list:Handle,
     pub(crate) last_removed:Option<crate::core::DeletedNote>,pub(crate) actions:Vec<(&'static str,&'static str)>,
     navigation:Vec<&'static str>,pub(crate) nav:Handle,pub(crate) list:Handle,pub(crate) input_box:Handle,pub(crate) detail_box:Handle,
     title:Handle,input_label:Handle,detail_label:Handle,notice:Handle,more:Handle,more_go:Handle,compact:Handle,compact_tools:Handle,
@@ -158,6 +160,10 @@ pub struct Ui {
     buttons:Vec<Handle>,fonts:Vec<HFONT>,pub(crate) appearance:(u32,u32,u32,u32),font_size:i32,pub(crate) zoom:i32,pub(crate) quitting:bool,
 }
 impl Ui{
+    // Front to back. The compact body paints behind its notification button.
+    pub(crate) fn motion_controls(&self)->[Handle;7]{
+        [self.resize,self.header[3],self.header[2],self.header[1],self.header[0],self.compact_tools,self.compact]
+    }
     pub(crate) fn new(hwnd:HWND,profile:PathBuf,isolated:bool)->Result<Self,String>{
         let (records,read_error)=match storage::load(&profile){Ok(s)=>(s,None),Err(e)=>(Default::default(),Some(e))};
         Self::from_records(hwnd,profile,isolated,records,read_error)
@@ -172,7 +178,9 @@ impl Ui{
         let title=add(hwnd.0,"STATIC","Buddy",0,0,0,head_font);
         let input_label=child("STATIC","",0,0,0);
         let detail_label=child("STATIC","",0,0,0);
-        let list=child("LISTBOX","Items",LIST,WS_TABSTOP|WS_VSCROLL|(LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS) as u32,0);
+        let list_style=WS_TABSTOP|WS_VSCROLL|(LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS) as u32;
+        let list=child("LISTBOX","Items",LIST,list_style,0);
+        let note_list=child("LISTBOX","Notes",INACTIVE_LIST,list_style,0);
         let input_box=child("EDIT","",INPUT,WS_TABSTOP|ES_AUTOHSCROLL as u32,0);
         let detail_box=child("EDIT","",DETAIL,WS_TABSTOP|WS_VSCROLL|(ES_MULTILINE|ES_WANTRETURN|ES_AUTOVSCROLL) as u32,0);
         let notice=child("STATIC","",0,0,0);
@@ -186,8 +194,9 @@ impl Ui{
         let compact=button("Open island",COMPACT);
         let compact_tools=button("Recent notifications",COMPACT_TOOLS);
         let tabs=TABS.iter().enumerate().map(|(i,(_,name,_))|button(name,TAB+i as u16)).collect();
-        let header=HEADER.iter().enumerate().map(|(i,(_,name,_))|button(name,HEAD+i as u16)).collect();
+        let header=HEADER.iter().enumerate().map(|(i,(_,name,_))|button(name,HEAD+i as u16)).collect::<Vec<_>>();
         let collapse=button("Collapse island",COLLAPSE);
+        install_header_tips(hwnd.0,&header,compact_tools,collapse);
         let resize=button("Resize Buddy height",RESIZE_HANDLE);
         let home_pick=button("Choose home workspace",HOME_PICK);
         let search_box=child("EDIT","",SEARCH,WS_TABSTOP|ES_AUTOHSCROLL as u32,0);
@@ -196,11 +205,11 @@ impl Ui{
         editor_navigation::attach(detail_box);
         editor_navigation::attach(images.editor);
         let buttons=(0..PRIMARY).map(|n|button("",ACTION+n as u16)).collect::<Vec<_>>();
-        if [nav,list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
+        if [nav,list,note_list,title,input_box,detail_box,compact].iter().any(|h|h.is_null()){return Err("Windows could not create Buddy's controls.".into())}
         unsafe {SendMessageW(input_box,EM_SETLIMITTEXT,32768,0);SendMessageW(detail_box,EM_SETLIMITTEXT,256*1024,0);}
         let home_note=records.get("settings").and_then(|rows|rows.iter().find(|r|r.first().is_some_and(|k|k=="homeNote"))).and_then(|r|r.get(1)).cloned();
         Ok(Self{hwnd,profile,records,page:"home",isolated,pending_widget_note:None,pending_page:None,read_error,paused:false,expanded:isolated,collapsed_at:None,opened_by_hover:false,
-            hidden_until:None,camera_check:Instant::now(),call_state:None,locked:false,suppressed:false,new_note:false,dirty_note:false,due_note:None,active_note:None,search:String::new(),note_ids:vec![],
+            hidden_until:None,camera_check:Instant::now(),call_state:None,locked:false,suppressed:false,new_note:false,dirty_note:false,due_note:None,active_note:None,search:String::new(),note_ids:vec![],note_list_model:None,note_list,utility_list:list,
             last_removed:None,actions:vec![],navigation:PAGES.iter().map(|p|p.0).collect(),nav,list,input_box,detail_box,title,input_label,detail_label,notice,more,more_go,compact,compact_tools,buttons,
             images,widgets_page:Default::default(),note_controls:Default::default(),workspaces_page:Default::default(),preferences:Default::default(),editor_views:Default::default(),home_media:Default::default(),devices_view:Default::default(),tab_order:Default::default(),tabs,header,collapse,resize,home_pick,home_note,search_box,fonts,appearance:(0xffffff,0xffffff,0x222222,0x814c18),font_size:100,zoom:100,quitting:false})
     }
@@ -218,12 +227,18 @@ impl Ui{
             // WM_SETREDRAW(TRUE) adds WS_VISIBLE. Background refreshes also use this
             // list while the current workspace is showing its own cards.
             let visible = GetWindowLongW(self.list, GWL_STYLE) as u32 & WS_VISIBLE != 0;
-            if visible { SendMessageW(self.list, WM_SETREDRAW, 0, 0); }
+            let freeze=visible || rows.len()>=32;
+            if freeze { SendMessageW(self.list, WM_SETREDRAW, 0, 0); }
             SendMessageW(self.list, LB_RESETCONTENT, 0, 0);
+            if rows.len()>=32{
+                let bytes=rows.iter().map(|s|2*(s.len()+1)).sum::<usize>();
+                SendMessageW(self.list,LB_INITSTORAGE,rows.len(),bytes as _);
+            }
             for row in rows { SendMessageW(self.list, LB_ADDSTRING, 0, wide(row).as_ptr() as _); }
-            if visible {
+            if freeze {
                 SendMessageW(self.list, WM_SETREDRAW, 1, 0);
-                RedrawWindow(self.list, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_FRAME);
+                if visible {RedrawWindow(self.list,std::ptr::null(),std::ptr::null_mut(),RDW_INVALIDATE|RDW_FRAME);}
+                else {SetWindowPos(self.list,std::ptr::null_mut(),0,0,0,0,SWP_HIDEWINDOW|SWP_NOREDRAW|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);}
             }
         }
     }
@@ -274,10 +289,31 @@ impl Ui{
         }
         if self.page!=page {devices::leave(self.page);}
         unsafe{RemovePropW(self.notice,wide("BuddyIssue").as_ptr());}
-        self.page=page;self.set_rows(&[]);
+        let next_list=if page=="notes"{self.note_list}else{self.utility_list};
+        if self.list!=next_list{
+            // Keep the native strings, scrollbar and screen-reader semantics
+            // of the hidden Notes list. Only the active list has command ID LIST.
+            show(self.list,false);
+            unsafe{
+                SetWindowLongPtrW(self.list,GWLP_ID,INACTIVE_LIST as isize);
+                SetWindowLongPtrW(next_list,GWLP_ID,LIST as isize);
+            }
+            self.list=next_list;
+            if let Some(mut paint)=NATIVE_COLORS.get().filter(|p|p.owner==self.hwnd.0){
+                paint.list=next_list;NATIVE_COLORS.set(Some(paint));
+            }
+        }
+        self.page=page;
+        // These renderers replace the entire list and detail. Resetting them
+        // first sends the same native controls an unnecessary empty model.
+        let replaces_list=matches!(page,"home"|"notes"|"widgets"|"settings"|"clipboard"|"quick"|"files"|"downloads"|"markup");
+        if !replaces_list{self.set_rows(&[]);}
         // Notes renders its selected title and rich body (or its empty state)
         // together. Clearing Rich Edit here would load an extra blank document.
-        if page!="notes"{self.set_input("");self.set_detail("");}
+        if page!="notes"{
+            if unsafe{GetWindowTextLengthW(self.input_box)}>0{self.set_input("");}
+            if !replaces_list && unsafe{GetWindowTextLengthW(self.detail_box)}>0{self.set_detail("");}
+        }
         self.dirty_note=false;
         let index=PAGES.iter().position(|p|p.0==page).unwrap();
         unsafe{SendMessageW(self.nav,LB_SETCURSEL,self.navigation.iter().position(|&p|p==page).unwrap(),0);}
@@ -289,7 +325,10 @@ impl Ui{
             "settings"=>("Value","Settings"),"diagnostics"=>("Update channel","Report"),"studio"=>("Value or source","Scene settings"),
             "audio"|"camera"=>("Device or value","Device details"),"widgets"=>("Minutes or label","Widget details"),
             "downloads"=>("Downloads folder","Selected download"),_=>("Selection","Details")};
-        label(self.input_label,i);label(self.detail_label,d);
+        if !matches!(page,"home"|"notes"|"widgets"|"settings"|"audio"|"camera"|"studio"|"notifications")
+            && !workspaces_page::handles(page) && !editor_views::handles(page){
+            label(self.input_label,i);label(self.detail_label,d);
+        }
         let actions=match page{"audio"|"camera"|"studio"|"ocr"=>devices::actions(page),"files"|"quick"|"clipboard"|"markup"|"downloads"=>workspace::actions(page),"media"|"notifications"|"rewrite"|"diagnostics"=>activity::actions(page),_=>core::actions(page)};
         self.actions=actions;self.configure_actions();
         let message=match page{"audio"|"camera"|"studio"|"ocr"=>devices::render(self,page),"files"|"quick"|"clipboard"|"markup"|"downloads"=>workspace::render(self,page),"media"|"notifications"|"rewrite"|"diagnostics"=>activity::render(self,page),_=>core::render(self,page)};
@@ -338,7 +377,7 @@ impl Ui{
         if size!=self.font_size {
             let updated=island_view::fonts(self.scale());
             if updated.iter().all(|h|!h.is_null()){
-                for h in [self.nav,self.list,self.input_box,self.detail_box,self.input_label,self.detail_label,self.notice,self.more,self.search_box]{
+                for h in [self.nav,self.note_list,self.utility_list,self.input_box,self.detail_box,self.input_label,self.detail_label,self.notice,self.more,self.search_box]{
                     unsafe{SendMessageW(h,WM_SETFONT,updated[0] as _,0);}
                 }
                 unsafe{SendMessageW(self.title,WM_SETFONT,updated[2] as _,0);}

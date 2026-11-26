@@ -6,7 +6,9 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
 
 **[Download for Windows x64][setup]** · [Portable ZIP][portable] · [Release notes and checksums][release]
 
-**0.1.1-beta.53** · 24.09 MB installer · 45.46 MB installed on Windows 11 x64
+**0.1.1-beta.54** · 24.09 MB installer · 45.45 MB installed on Windows 11 x64
+
+[Windows performance and usability scorecard](docs/quality-review.md) · [Watch the Windows walkthrough][walkthrough]
 
 ## Workspaces
 
@@ -17,7 +19,7 @@ Buddy keeps notes, clipboard history, downloads, timers, and device controls in 
   <a href="https://raw.githubusercontent.com/AaronCampbellit/Buddy-Work-Rust/main/docs/screenshots/clipboard-overflow.png"><img src="docs/screenshots/clipboard-overflow.png" width="390" alt="Clipboard in dark mode with an image, a map link and a scrollable grid of field notes"></a>
 </p>
 
-**Home** shows a selected note alongside playback controls for the current track. **Notes** opens the full editor with formatted text, inline images, links, and a reminder field.
+**Home** shows a selected note alongside playback controls for the current track. **Notes** gives each title its own line in the list. Open a note to edit its formatted text, inline images, links, and reminder.
 
 <p>
   <a href="https://raw.githubusercontent.com/AaronCampbellit/Buddy-Work-Rust/main/docs/screenshots/home-playing.png"><img src="docs/screenshots/home-playing.png" width="390" alt="Home with a coastal trail guide and the Harbor Loop track playing"></a>
@@ -73,7 +75,7 @@ Open a clipboard image in **Image markup**. Use the editor to crop, annotate, or
 **Widgets** holds the Pomodoro timer, stopwatch, laps, and side-widget pickers. A pinned note stays editable beside the compact island. A pinned clipboard image keeps its preview and actions within reach.
 
 <p>
-  <a href="https://raw.githubusercontent.com/AaronCampbellit/Buddy-Work-Rust/main/docs/screenshots/timers.png"><img src="docs/screenshots/timers.png" width="840" alt="Widgets showing a focus countdown, completed sessions, a stopwatch and lap times"></a>
+  <a href="https://raw.githubusercontent.com/AaronCampbellit/Buddy-Work-Rust/main/docs/screenshots/widgets-current.png"><img src="docs/screenshots/widgets-current.png" width="840" alt="Widgets showing a focus countdown, completed sessions, a stopwatch and lap times"></a>
 </p>
 
 ### Pin a note
@@ -159,7 +161,7 @@ Choose a **Background**, add a **Name & logo**, or configure **Picture-in-pictur
 <details>
 <summary><strong>Watch the island open and close</strong></summary>
 
-When you switch tabs, Buddy keeps the current page visible until the next tab and its contents are ready. You can also select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
+When you switch tabs, Buddy presents the next page and its toolbar together. Returning to Notes preserves the list and its scroll position when the notes and search are unchanged. You can also select a tab while the island is opening. Buddy opens the last tab you select when the island reaches full width. Closing the island cancels that selection. Either Windows’ animation setting or Buddy’s **Reduce motion** switch can make the transition immediate.
 
 **Opening a pinned note.** The tabs, note text, and inline image fade in as the island expands. You can edit the note directly once it opens. The Windows 11 recording shows startup, opening a pinned note, and switching between Notes, Clipboard, Quick Access, Home, and Widgets. [Watch the walkthrough][walkthrough]
 
@@ -183,7 +185,7 @@ When you switch tabs, Buddy keeps the current page visible until the next tab an
 
 Windows lists the app as **Buddy** in Start and Installed apps. If another edition already owns the Buddy Start shortcut, this edition adds **Buddy** in the **Buddy-Work-Rust** Start menu folder.
 
-The installer runs under your Windows user account and is unsigned. The app folder uses 45,457,540 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.59 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
+The installer runs under your Windows user account and is unsigned. The app folder uses 45,450,884 bytes, including 24.54 MB of camera files and 12.23 MB for local OCR. Registering the optional shared Buddy Camera component brings the combined footprint to 72.58 MB on the test machine, before user data. The release also includes an unsigned MSIX for organizations that sign and deploy their own packages. [All downloads and SHA-256 checksums][release]
 
 Windows encrypts saved notes and clipboard history for the current user. OCR runs on your device. Reading other apps’ notifications requires Windows consent, and registering the optional virtual camera can require administrator approval. [Feature permissions](native-rust/README.md#features-and-access)
 
@@ -191,7 +193,7 @@ Windows encrypts saved notes and clipboard history for the current user. OCR run
 
 Buddy uses Rust and native Win32 controls. Build from `native-rust` on Windows x64. To package the app, extract the matching portable ZIP and pass its `Buddy\camera` folder to the packager. [Build and packaging instructions](native-rust/README.md#build-and-package-on-windows-x64)
 
-[setup]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.53/Buddy-Setup-x64.exe
-[portable]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.53/Buddy-Portable-x64.zip
-[walkthrough]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.53/Buddy-Walkthrough.mp4
-[release]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/tag/v0.1.1-beta.53
+[setup]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.54/Buddy-Setup-x64.exe
+[portable]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.54/Buddy-Portable-x64.zip
+[walkthrough]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/download/v0.1.1-beta.54/Buddy-Walkthrough.mp4
+[release]: https://github.com/AaronCampbellit/Buddy-Work-Rust/releases/tag/v0.1.1-beta.54

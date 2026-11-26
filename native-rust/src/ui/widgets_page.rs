@@ -58,6 +58,7 @@ struct State{
     view:Cell<HWND>,scale:Cell<f32>,colors:Cell<chrome::Colors>,fonts:Cell<[HFONT;4]>,
     timers:RefCell<Timers>,scroll:Cell<i32>,wheel:super::WheelMotion,on:Cell<bool>,tick:Cell<u32>,last_refresh:Cell<u64>,
     notes:RefCell<Vec<String>>,clips:RefCell<Vec<(String,String)>>,
+    choice_labels:[RefCell<Vec<String>>;2],
 }
 impl State{
     fn hwnd(&self,id:u16)->HWND{unsafe{GetDlgItem(self.view.get(),id as i32)}}
@@ -184,7 +185,7 @@ pub(super) struct WidgetsPage{state:Box<State>}
 impl WidgetsPage{
     pub(super) fn new(parent:Handle,font:HFONT)->Self{
         let state=Box::new(State{view:Cell::new(null_mut()),scale:Cell::new(1.),colors:Cell::new((0xffffff,0xffffff,0,0)),fonts:Cell::new([font;4]),timers:Default::default(),
-            scroll:Cell::new(0),wheel:Default::default(),on:Cell::new(false),tick:Cell::new(0),last_refresh:Cell::new(0),notes:Default::default(),clips:Default::default()});
+            scroll:Cell::new(0),wheel:Default::default(),on:Cell::new(false),tick:Cell::new(0),last_refresh:Cell::new(0),notes:Default::default(),clips:Default::default(),choice_labels:Default::default()});
         let viewport=add(parent,"STATIC","Timer and side widget settings",VIEW,WS_VSCROLL|WS_CLIPCHILDREN,WS_EX_CONTROLPARENT,font);
         state.view.set(viewport);show(viewport,false);
         let data=state.as_ref()as *const State as usize;unsafe{SetWindowSubclass(viewport,Some(view_proc),1,data);}
@@ -208,8 +209,14 @@ impl WidgetsPage{
         let note_id=core::setting(ui,"noteWidget","");let pinned=ui.records.get("clipboard_widget").and_then(|v|v.first());
         let fill=|id:u16,labels:Vec<String>,index:usize|unsafe{
             let box_=state.hwnd(id);
+            let cached=&state.choice_labels[usize::from(id==CLIP)];
+            if *cached.borrow()==labels && SendMessageW(box_,CB_GETCOUNT,0,0)==(labels.len()+1) as isize {
+                if SendMessageW(box_,CB_GETCURSEL,0,0)!=index as isize{SendMessageW(box_,CB_SETCURSEL,index,0);}
+                return
+            }
             SendMessageW(box_,WM_SETREDRAW,0,0);SendMessageW(box_,CB_RESETCONTENT,0,0);SendMessageW(box_,CB_ADDSTRING,0,wide("Off").as_ptr()as _);
-            for label in labels{SendMessageW(box_,CB_ADDSTRING,0,wide(&label).as_ptr()as _);}
+            for label in &labels{SendMessageW(box_,CB_ADDSTRING,0,wide(label).as_ptr()as _);}
+            cached.replace(labels);
             SendMessageW(box_,CB_SETCURSEL,index,0);SendMessageW(box_,WM_SETREDRAW,1,0);InvalidateRect(box_,null(),0);
         };
         let note=notes.iter().position(|r|row_field(r,0)==note_id).map_or(0,|i|i+1);
@@ -217,7 +224,9 @@ impl WidgetsPage{
         fill(NOTE,notes.iter().map(|r|if r[1].is_empty(){"Untitled note".into()}else{short(&r[1])}).collect(),note);
         fill(CLIP,clips.iter().map(|r|if r[0]=="image"{format!("Image {} × {}",row_field(r,4),row_field(r,5))}else{short(&r[1])}).collect(),clip);
         *state.notes.borrow_mut()=notes.iter().map(|r|r[0].clone()).collect();
-        *state.clips.borrow_mut()=clips.iter().map(|r|(r[0].clone(),r[1].clone())).collect();
+        if !clips.iter().map(|r|(&r[0],&r[1])).eq(state.clips.borrow().iter().map(|(kind,value)|(kind,value))){
+            *state.clips.borrow_mut()=clips.iter().map(|r|(r[0].clone(),r[1].clone())).collect();
+        }
     }
     fn sync(&self,ui:&Ui){
         let s=&self.state;let times=Timers::read(ui);

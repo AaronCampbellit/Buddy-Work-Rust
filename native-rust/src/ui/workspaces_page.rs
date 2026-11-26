@@ -334,7 +334,10 @@ impl State{
         pics.retain(|key,_|keys.iter().any(|(_,s)|s==key));
         for (section,key) in keys{
             if pics.contains_key(&key){continue}
-            let rgba=if section=="clipboard"{workspace::widget_thumbnail(ui,&key,400,260)}else{workspace::file_card_thumbnail(Path::new(&key))};
+            // Only immutable content-addressed images share the existing bounded
+            // cache with Notes. Linked files are reread when the page opens.
+            let rgba=if section=="clipboard"{crate::inline_images::cached_thumbnail(ui,&key,400,260).map(|img|img.as_ref().clone())}
+                else{workspace::file_card_thumbnail(Path::new(&key))};
             pics.insert(key,rgba.ok().map(|img|Rc::new(Picture::new(img))));
         }
         unsafe{RedrawWindow(self.grid.get(),null(),null_mut(),RDW_INVALIDATE|RDW_ALLCHILDREN);}
@@ -428,7 +431,7 @@ impl Ui{
         if !(VIEW..2800).contains(&id){return false}
         let Some(w)=self.workspaces_page.get()else{return true};let s=&w.state;
         if !handles(self.page)||s.page.get()!=self.page||!on(s.view.get())||s.suppress.get(){return true}
-        if id==RETURN{s.initialize_pictures(self);return true}
+        if id==RETURN{if s.pending.get(){s.initialize_pictures(self);}return true}
         if id==QUERY&&code==EN_CHANGE as u16{
             s.query.replace(window_text(s.hwnd(QUERY),32768));s.reset_scroll();s.reload(self);s.layout();return true
         }

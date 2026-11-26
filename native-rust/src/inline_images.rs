@@ -54,10 +54,13 @@ pub(crate) fn placements(row:&[String],saved:Option<&Vec<Vec<String>>>)->Vec<Pla
     result
 }
 
-struct Cache{entries:VecDeque<((PathBuf,String),Rc<RgbaImage>)>,bytes:usize}
+struct Cache{entries:VecDeque<((PathBuf,String,u32,u32),Rc<RgbaImage>)>,bytes:usize}
 thread_local!{static THUMBS:RefCell<Cache>=const{RefCell::new(Cache{entries:VecDeque::new(),bytes:0})};}
 fn thumbnail(ui:&Ui,id:&str)->Result<Rc<RgbaImage>,String>{
-    let key=(ui.profile.clone(),id.to_owned());
+    cached_thumbnail(ui,id,THUMB_W,THUMB_H)
+}
+pub(crate) fn cached_thumbnail(ui:&Ui,id:&str,width:u32,height:u32)->Result<Rc<RgbaImage>,String>{
+    let key=(ui.profile.clone(),id.to_owned(),width,height);
     if let Some(image)=THUMBS.with(|cache|{
         let mut cache=cache.borrow_mut();
         let i=cache.entries.iter().position(|(k,_)|*k==key)?;
@@ -66,7 +69,7 @@ fn thumbnail(ui:&Ui,id:&str)->Result<Rc<RgbaImage>,String>{
         cache.entries.push_front(entry);
         Some(result)
     }){return Ok(image);}
-    let image=Rc::new(workspace::widget_thumbnail(ui,id,THUMB_W,THUMB_H)?);
+    let image=Rc::new(workspace::widget_thumbnail(ui,id,width,height)?);
     THUMBS.with(|cache|{
         let mut cache=cache.borrow_mut();
         cache.bytes+=image.len();
@@ -222,7 +225,17 @@ impl Drop for NoteHint {
 struct Preview{image:RefCell<Option<(String,Rc<RgbaImage>)>>,field:Cell<u32>}
 struct OleGuard;
 impl Drop for OleGuard{fn drop(&mut self){unsafe{OleUninitialize();}}}
+#[derive(PartialEq)]
+struct NoteDocument {
+    id:String,
+    revision:u64,
+    appearance:crate::chrome::Colors,
+    zoom:i32,
+    dpi:u32,
+}
+
 pub(crate) struct Controls{
+    document:RefCell<Option<NoteDocument>>,
     pub editor:HWND,preview:HWND,token:Cell<u32>,keys:RefCell<HashMap<u32,String>>,
     clip:Box<Preview>,hint:Box<NoteHint>,edit_area:Cell<[i32;4]>,corner_size:Cell<(i32,i32,i32)>,_ole:OleGuard,bg:Cell<u32>,
     formatted:Box<Cell<bool>>,retained_format:RefCell<Option<(String,String)>>,style:Cell<(u32,u32,i32,i32)>,load_error:RefCell<Option<String>>,
@@ -250,7 +263,7 @@ impl Controls{
             let hint=Box::<NoteHint>::default();
             SetWindowSubclass(editor,Some(hint_proc),2,hint.as_ref() as *const _ as usize);
             SetWindowSubclass(editor,Some(note_proc),1,formatted.as_ref() as *const _ as usize);SetWindowSubclass(preview,Some(preview_proc),1,clip.as_ref() as *const _ as usize);
-            Ok(Self{editor,preview,token:Cell::new(0),keys:Default::default(),clip,hint,edit_area:Cell::new([0;4]),corner_size:Cell::new((0,0,0)),_ole:ole,
+            Ok(Self{document:Default::default(),editor,preview,token:Cell::new(0),keys:Default::default(),clip,hint,edit_area:Cell::new([0;4]),corner_size:Cell::new((0,0,0)),_ole:ole,
                 bg:Cell::new(0xffffff),formatted,retained_format:Default::default(),style:Cell::new((u32::MAX,u32::MAX,0,10)),load_error:Default::default()})
         }
     }
@@ -328,6 +341,7 @@ impl Controls{
         Ok(None)
     }
     pub fn set_body(&self,text:&str){
+        self.document.borrow_mut().take();
         self.formatted.set(false);
         self.retained_format.borrow_mut().take();
         self.keys.borrow_mut().clear();self.load_error.borrow_mut().take();
@@ -421,7 +435,18 @@ pub(crate) fn control_action(id:u16)->Option<&'static str>{
     match id{PASTE=>Some("attach"),OPEN=>Some("image"),REMOVE=>Some("detach"),_=>None}
 }
 pub(crate) fn load_note(ui:&Ui,row:&[String])->Result<(),String>{
-    ui.images.load_row(ui,row)
+    let editor=&ui.images;
+    let key=NoteDocument{id:row.first().cloned().unwrap_or_default(),revision:ui.records.preview_revision(),
+        appearance:ui.appearance,zoom:ui.zoom,dpi:crate::shell::dpi(editor.editor)};
+    // A page switch hides this particular RichEdit, leaving its text, OLE
+    // objects, selection and undo state intact. A changed note/profile/theme
+    // or a native edit always reconstructs the document from saved data.
+    let reuse=unsafe{GetWindowLongW(editor.editor,GWL_STYLE) as u32&WS_VISIBLE==0
+        && SendMessageW(editor.editor,EM_GETMODIFY_,0,0)==0};
+    if reuse && editor.document.borrow().as_ref()==Some(&key){return Ok(())}
+    editor.load_row(ui,row)?;
+    editor.document.replace(Some(key));
+    Ok(())
 }
 pub(crate) fn paste_note(ui:&mut Ui)->Result<(),String>{
     if ui.images.contents()?.1.len()>=20{return Err("This note already has 20 images.".into());}
@@ -439,7 +464,8 @@ pub(crate) fn set_clipboard(ui:&Ui,id:Option<&str>){
     let image=id.map(|id|(id.to_owned(),thumbnail(ui,id).unwrap_or_else(|_|Rc::new(missing()))));
     *ui.images.clip.image.borrow_mut()=image;
     unsafe{InvalidateRect(ui.images.preview,null(),1);}
-    if ui.page=="clipboard"{ui.layout();}
+    // The Clipboard layout uses its card grid. Its legacy selected-image HWND
+    // is hidden, so changing the selection requires no page-wide relayout.
 }
 pub(crate) fn command(ui:&mut Ui,id:u16,_code:u16)->bool{
     let result=match id {

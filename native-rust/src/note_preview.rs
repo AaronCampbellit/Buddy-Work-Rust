@@ -34,23 +34,12 @@ fn dimensions(ui:&Ui)->Option<(i32,i32)>{
     (r.right.checked_mul(r.bottom)?<=3*1024*1024).then_some((r.right,r.bottom))
 }
 
-fn fingerprint(ui:&Ui,id:&str,width:i32,height:i32)->Option<u64>{
-    let notes=ui.records.get("notes")?;
+fn fingerprint(ui:&Ui,id:&str,width:i32,height:i32)->u64{
     let frame=island::frame();let body=frame.expanded_body;
     let mut key=DefaultHasher::new();
     (ui.hwnd.0 as usize,&ui.profile,id,width,height,body.left,body.right,body.bottom,ui.zoom,ui.appearance,shell::dpi(ui.hwnd.0)).hash(&mut key);
-    ui.records.get("settings").hash(&mut key);
-    let mut found=false;
-    for row in notes{
-        if row.first().is_some_and(|s|s==id){row.hash(&mut key);found=true;}
-        else if row.len()>=7 {
-            for i in [0,1,3,4,5,6]{row[i].hash(&mut key);}
-            for c in row[2].chars().take(160){c.hash(&mut key);}
-        }
-    }
-    ui.records.get(&inline_images::offset_key(id)).hash(&mut key);
-    ui.records.get(&inline_images::format_key(id)).hash(&mut key);
-    found.then(||key.finish())
+    ui.records.preview_revision().hash(&mut key);
+    key.finish()
 }
 
 fn preview_records(ui:&Ui,id:&str)->storage::Records{
@@ -138,7 +127,7 @@ impl Render {
 
 pub(super) fn warm(ui:&Ui,id:&str){
     let Some((width,height))=dimensions(ui)else{clear();return};
-    let Some(key)=fingerprint(ui,id,width,height)else{clear();return};
+    let key=fingerprint(ui,id,width,height);
     PREVIEW.with(|slot|{
         let mut state=slot.borrow_mut();
         state.poll();
@@ -149,6 +138,7 @@ pub(super) fn warm(ui:&Ui,id:&str){
         }
         *state=Preview::default();
         let Some(layout)=island::current_layout()else{return};
+        if !ui.records.get("notes").is_some_and(|rows|rows.iter().any(|r|r.len()>=7 && r[0]==id)){return}
         let render=Render{layout,profile:ui.profile.clone(),records:preview_records(ui,id),id:id.to_owned(),width,height,zoom:ui.zoom};
         let (send,result)=mpsc::sync_channel(1);let canceled=Arc::new(AtomicBool::new(false));
         let stop=canceled.clone();
@@ -162,7 +152,7 @@ pub(super) fn warm(ui:&Ui,id:&str){
 pub(super) fn validate(ui:&Ui){
     if !active(){return}
     let id=core::setting(ui,"noteWidget","");
-    let key=dimensions(ui).and_then(|(w,h)|fingerprint(ui,id,w,h));
+    let key=dimensions(ui).map(|(w,h)|fingerprint(ui,id,w,h));
     if key.is_none() || !PREVIEW.with(|s|s.borrow().key==key){clear();}
 }
 
@@ -171,7 +161,7 @@ pub(super) fn activate(ui:&Ui,id:&str)->bool{
     let expected=fingerprint(ui,id,width,height);
     PREVIEW.with(|slot|{
         let mut state=slot.borrow_mut();state.poll();
-        if expected.is_none() || expected!=state.key{*state=Preview::default();return false}
+        if Some(expected)!=state.key{*state=Preview::default();return false}
         if let Some(pixels)=state.pixels.take(){
             state.active=unsafe{motion_surface::Surface::from_pixels(width,height,&pixels)};
         }

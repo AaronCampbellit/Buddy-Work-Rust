@@ -573,3 +573,136 @@ fn idle_pinned_preview_contains_the_actual_inline_art_and_rejects_edited_data(){
     });
     if supplied.is_none(){fs::remove_dir_all(root).unwrap();}
 }
+
+#[test]
+#[ignore="time a populated synthetic profile on a private Windows desktop"]
+fn thousand_note_pinned_idle_and_autosave() {
+    use std::time::{Duration, Instant};
+    let profile=env::temp_dir().join(format!("Buddy-thousand-notes-{}-{}",std::process::id(),core::now()));
+    let body="This is synthetic text for the pinned-note benchmark. ".repeat(20);
+    let notes=(0..1000).map(|i|vec![format!("n{i}"),format!("Benchmark note {i}"),body.clone(),
+        "0".into(),"1".into(),String::new(),"1".into()]).collect();
+    let mut records=storage::Records::new();
+    records.insert("notes".into(),notes);
+    records.insert("settings".into(),vec![vec!["noteWidget".into(),"n999".into()]]);
+    storage::save(&profile,&records).expect("benchmark needs Windows user encryption for its synthetic profile");
+    drop(records);
+    workspace::with_private_test_desktop(||unsafe{
+        let h=create_app(&profile,false,&[island::Widget::Note]);
+        with_ui(|u|{core::tick(u);shell::model_tick(u);});
+        let deadline=Instant::now()+Duration::from_secs(60);
+        while !read_ui(|u|note_preview::activate(u,"n999")).unwrap() {
+            read_ui(|u|note_preview::warm(u,"n999"));
+            assert!(Instant::now()<deadline,"pinned preview never became available");
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        let start=Instant::now();
+        for _ in 0..300 { read_ui(|u|note_preview::warm(u,"n999")); }
+        let preview=start.elapsed();
+        let start=Instant::now();
+        for _ in 0..300 { with_ui(|u|{core::tick(u);shell::model_tick(u);}); }
+        println!("BUDDY_PERF notes=1000 ticks=300 preview_only_ms={:.3} compact_model_ms={:.3}",
+            preview.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
+        close_app(h);
+
+        let h=create_app(&profile,true,&[]);
+        with_ui(|u|{u.active_note=Some("n999".into());u.navigate("notes");});
+        let mut expected=body;
+        for sample in 0..12{
+            // Send the edit message directly to this private RichEdit window.
+            let editor=read_ui(|u|u.images.editor).unwrap();
+            let start=Instant::now();
+            const EM_SETSEL:u32=0xb1;
+            const EM_REPLACESEL:u32=0xc2;
+            SendMessageW(editor,EM_SETSEL,expected.len(),expected.len() as isize);
+            SendMessageW(editor,EM_REPLACESEL,1,wide("x").as_ptr() as isize);
+            let edit=start.elapsed();
+            let start=Instant::now();
+            with_ui(|u|core::save_note(u).unwrap());
+            let autosave=start.elapsed();
+            let start=Instant::now();
+            with_ui(|u|core::save_note(u).unwrap());
+            let unchanged=start.elapsed();
+            expected.push('x');
+            assert_eq!(storage::load(&profile).unwrap()["notes"][999][2],expected);
+            println!("BUDDY_PERF sample={sample} edit_dispatch_ms={:.3} changed_save_ms={:.3} unchanged_save_ms={:.3}",
+                edit.as_secs_f64()*1000.0,autosave.as_secs_f64()*1000.0,unchanged.as_secs_f64()*1000.0);
+        }
+        close_app(h);
+    });
+    fs::remove_dir_all(profile).unwrap();
+}
+
+#[test]
+#[ignore="real native note rows, accessible button names and tooltips on an isolated Windows desktop"]
+fn note_titles_and_header_tools_at_three_scales() {
+    use windows_sys::Win32::UI::Controls::{TTM_GETTEXTW,TTF_IDISHWND,TTTOOLINFOW,TOOLTIPS_CLASSW};
+    let supplied=env::var_os("BUDDY_ISLAND_FIXTURES").map(PathBuf::from);
+    let fixtures=supplied.clone().unwrap_or_else(||env::temp_dir().join(format!("Buddy-readability-{}-{}",std::process::id(),core::now())));
+    if supplied.is_none(){seed_profiles(&fixtures);}
+    let output=env::var_os("BUDDY_UI_CAPTURE_DIR").map(PathBuf::from);
+    if let Some(directory)=&output{fs::create_dir_all(directory).unwrap();}
+    workspace::with_private_test_desktop(||unsafe{
+        let hwnd=create_app(&fixtures.join("fixture-image"),true,&[]);
+        for zoom in [100,125,150] {
+            with_ui(|u|{
+                u.zoom=zoom;
+                let layout=island::Layout::new(RECT{left:0,top:0,right:1920,bottom:1080},shell::dpi(hwnd),zoom,island::Placement::Center,376,&[]);
+                let host=layout.host;
+                island::configure(layout,true);island::request(true,true);
+                SetWindowPos(hwnd,null_mut(),host.left,host.top,host.right-host.left,host.bottom-host.top,
+                    SWP_NOZORDER|SWP_NOACTIVATE);
+                island::apply_region(hwnd,&island::frame());
+                u.apply_appearance();
+                let notes=u.records.get_mut("notes").unwrap();
+                notes[0][1]="Coastal field guide A".into();
+                notes[0][3]="1".into();
+                u.active_note=Some(notes[0][0].clone());
+                u.navigate("notes");core::note_rows(u);u.layout();
+            });
+            let list=GetDlgItem(hwnd,ui::LIST as i32);
+            let mut row=RECT::default();
+            assert!(SendMessageW(list,LB_GETITEMRECT,0,&mut row as *mut _ as _)>=0);
+            MapWindowPoints(list,hwnd,(&mut row as *mut RECT).cast(),2);
+            // Render the same first line twice. If truncation hides the final
+            // letter both captures are identical, irrespective of the font or DPI.
+            row.bottom=row.top+((row.bottom-row.top) as f32*20.0/61.0).round() as i32;
+            let first=render(hwnd,row);
+            with_ui(|u|{u.records.get_mut("notes").unwrap()[0][1]="Coastal field guide B".into();core::note_rows(u);});
+            let second=render(hwnd,row);
+            assert!(first.pixels().zip(second.pixels()).filter(|(a,b)|a!=b).count()>=3,
+                "same-prefix titles must show the distinguishing final letter at {zoom}%");
+            if let Some(directory)=&output{
+                save(directory,&format!("notes-title-{zoom}"),&render(hwnd,island::frame().body));
+            }
+        }
+        // Check the same window text used by Win32's native button accessibility
+        // provider. Only the active tool (including its subpages) gains a suffix.
+        let names=["Recent notifications","Widgets","Devices","Settings"];
+        for (page,selected) in [("widgets",Some(1)),("audio",Some(2)),("studio",Some(2)),("settings",Some(3)),("diagnostics",Some(3)),("home",None)] {
+            with_ui(|u|u.navigate(page));
+            for (index,name) in names.iter().enumerate(){
+                let expected=if selected==Some(index){format!("{name}, current page")}else{name.to_string()};
+                assert_eq!(ui::window_text(GetDlgItem(hwnd,180+index as i32),64),expected,"on {page}");
+            }
+            if page=="widgets" {
+                if let Some(directory)=&output{save(directory,"widgets-current-tool",&render(hwnd,island::frame().body));}
+            }
+        }
+        let mut tips=null_mut();
+        loop {
+            tips=FindWindowExW(null_mut(),tips,TOOLTIPS_CLASSW,null());
+            assert!(!tips.is_null(),"the island owns a tooltip window");
+            if GetWindow(tips,GW_OWNER)==hwnd{break;}
+        }
+        for (id,name) in [(180,names[0]),(181,names[1]),(182,names[2]),(183,names[3]),(108,names[0]),(184,"Collapse island")] {
+            let mut buf=[0u16;256];
+            let mut tool=TTTOOLINFOW{cbSize:std::mem::size_of::<TTTOOLINFOW>() as _,uFlags:TTF_IDISHWND,
+                hwnd,uId:GetDlgItem(hwnd,id) as usize,lpszText:buf.as_mut_ptr(),..Default::default()};
+            SendMessageW(tips,TTM_GETTEXTW,buf.len(),&mut tool as *mut _ as _);
+            assert_eq!(String::from_utf16_lossy(&buf[..buf.iter().position(|c|*c==0).unwrap()]),name);
+        }
+        close_app(hwnd);
+    });
+    if supplied.is_none(){fs::remove_dir_all(fixtures).unwrap();}
+}

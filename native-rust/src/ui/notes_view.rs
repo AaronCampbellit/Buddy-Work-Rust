@@ -19,6 +19,7 @@ const ROW_PIN: u16 = 2803;
 const ROW_DELETE: u16 = 2804;
 const AUTOSAVE: u16 = 2805;
 const LIST_MENU: u16 = 2806;
+const ROW_HEIGHT: i32 = 61;
 const LEFT: u32 = DT_VCENTER | DT_SINGLELINE | DT_LEFT;
 const RIGHT: u32 = DT_VCENTER | DT_SINGLELINE | DT_RIGHT;
 
@@ -74,8 +75,7 @@ struct Layout {
 
 impl Ui {
     pub(crate) fn note_scroll_anchor(&self) -> Option<String> {
-        // Navigation first clears this shared LISTBOX. During an ordinary
-        // Notes refresh its rows still correspond to the previous note_ids.
+        // The dedicated Notes list retains its top row across tab switches.
         unsafe {
             if self.page != "notes" || self.note_ids.is_empty()
                 || SendMessageW(self.list,LB_GETCOUNT,0,0) != self.note_ids.len() as isize {
@@ -135,7 +135,7 @@ impl Ui {
             if let Some(c) = self.note_controls.get() {
                 for h in [c.close, c.schedule, c.dismiss] { show(h, false); }
                 unsafe {
-                    if !RemovePropW(self.list, wide("BuddyNoteList").as_ptr()).is_null() {
+                    if !RemovePropW(self.note_list, wide("BuddyNoteList").as_ptr()).is_null() {
                         SendMessageW(self.input_box, WM_SETFONT, self.fonts[0] as _, 0);
                         SendMessageW(self.input_box, 0x1501, 0, wide("").as_ptr() as _);
                     }
@@ -165,7 +165,7 @@ impl Ui {
         let remove = self.edited_row().is_some_and(|row| !row[5].is_empty());
         unsafe {
             SetPropW(self.list, wide("BuddyNoteList").as_ptr(), 1usize as _);
-            SendMessageW(self.list, LB_SETITEMHEIGHT, 0, p(47) as _);
+            SendMessageW(self.list, LB_SETITEMHEIGHT, 0, p(ROW_HEIGHT) as _);
             SendMessageW(self.input_box, WM_SETFONT, self.fonts[1] as _, 0);
             SendMessageW(self.input_box, 0x1501, 1, wide("Untitled note").as_ptr() as _);
         }
@@ -247,28 +247,25 @@ impl Ui {
             let base = if selected { mix(bg,accent,27) } else if hot { mix(bg,ink,16) } else { bg };
             panel(dc,area,p(8),base,if focus {accent} else if selected {mix(bg,accent,100)} else {base});
             if selected { fill(dc,rect(area.left+p(1),area.top+p(8),p(2),area.bottom-area.top-p(16)),accent); }
-            let actions = area.right-p(54);
-            fill(dc,rect(actions,area.top+p(1),p(1),area.bottom-area.top-p(2)),edge);
-            let cy = (area.top+area.bottom)/2;
-            let mut x = area.left+p(10);
             let pinned = row[3]=="1";
-            if pinned { icon(dc,x,cy-p(13),p(12),Icon::Pin,accent,base); x+=p(17); }
-            let stamp = note_date(&row[6]);
-            let stamp_width = width(dc,&stamp,self.fonts[8])+p(4);
-            let title_right = (actions-p(8+5)-stamp_width).max(x);
+            let left = area.left+p(10);
+            let title_left = if pinned { left+p(16) } else { left };
+            if pinned { icon(dc,left,area.top+p(6),p(12),Icon::Pin,accent,base); }
             let title = if row[1].is_empty() { "Untitled note" } else { &row[1] };
-            text(dc,rect(x,cy-p(16),title_right-x,p(16)),title,self.fonts[1],ink,LEFT);
-            text(dc,RECT{left:(actions-p(8)-stamp_width).max(x),right:actions-p(8),top:cy-p(16),bottom:cy},&stamp,self.fonts[8],muted,RIGHT);
+            text(dc,RECT{left:title_left,right:area.right-p(8),top:area.top+p(3),bottom:area.top+p(21)},title,self.fonts[1],ink,LEFT);
             let snippet=row[2].split_whitespace().take(36).collect::<Vec<_>>().join(" ");
             let preview=if snippet.is_empty(){"Empty note"}else{snippet.as_str()};
-            text(dc,rect(area.left+p(10),cy+p(1),actions-area.left-p(18),p(14)),preview,self.fonts[3],muted,LEFT);
-            for (i, glyph) in [Icon::Pin,Icon::Trash].into_iter().enumerate() {
-                let x = actions+p(27)*i as i32;
+            // The title has its own line. Reserve the trailing controls only on
+            // the bottom line, so similar titles can be distinguished at any DPI.
+            let (pin,delete) = note_action_rects(r);
+            text(dc,RECT{left,right:area.right-p(8),top:area.top+p(20),bottom:pin.top},preview,self.fonts[3],muted,LEFT);
+            text(dc,RECT{left,right:pin.left-p(4),top:pin.top,bottom:pin.bottom},&note_date(&row[6]),self.fonts[8],muted,LEFT);
+            for (i, (glyph, target)) in [(Icon::Pin,pin),(Icon::Trash,delete)].into_iter().enumerate() {
                 let over = hot && hovered & 3 == i+1;
                 let fg = if over && i==1 {mix(ink,0x4040ff,175)} else if i==0 && pinned {accent} else if over {ink} else {muted};
                 let face = if over {mix(base,fg,22)} else {base};
-                if over {panel(dc,rect(x+p(1),area.top+p(2),p(25),area.bottom-area.top-p(4)),p(6),face,face);}
-                icon(dc,x+(p(27)-p(14))/2,cy-p(7),p(14),glyph,fg,face);
+                if over {panel(dc,chrome::inset(target,p(1)),p(5),face,face);}
+                icon(dc,(target.left+target.right-p(14))/2,(target.top+target.bottom-p(14))/2,p(14),glyph,fg,face);
             }
             return true;
         }
@@ -347,6 +344,16 @@ impl Ui {
 
 // Painted row actions track the list's actual item rectangles, including after a
 // native scrollbar move. Keyboard users have the same actions on the menu key.
+fn note_action_rects(row:RECT)->(RECT,RECT) {
+    let scale=(row.bottom-row.top) as f32 / ROW_HEIGHT as f32;
+    let p=|n:i32|(n as f32*scale).round() as i32;
+    let right=row.right-p(3);
+    let bottom=row.bottom-p(4);
+    let delete=RECT{left:right-p(27),right,top:bottom-p(24),bottom};
+    let pin=RECT{left:delete.left-p(27),right:delete.left,..delete};
+    (pin,delete)
+}
+
 unsafe fn row_hit(list:Handle, lp:isize)->Option<(usize,usize)> {
     let x=lp as i16 as i32;
     let y=(lp>>16) as i16 as i32;
@@ -355,9 +362,9 @@ unsafe fn row_hit(list:Handle, lp:isize)->Option<(usize,usize)> {
     let i=(hit & 0xffff) as usize;
     let mut r=RECT::default();
     if SendMessageW(list,LB_GETITEMRECT,i,&mut r as *mut _ as _)<0 || y<r.top || y>=r.bottom {return None;}
-    let scale=(r.bottom-r.top) as f32 / 47.0;
-    let width=(27.0*scale).round() as i32;
-    let zone=if y>=r.bottom-(4.0*scale).round() as i32 || x<r.right-2*width{0}else if x<r.right-width{1}else{2};
+    let (pin,delete)=note_action_rects(r);
+    let contains=|r:RECT|x>=r.left && x<r.right && y>=r.top && y<r.bottom;
+    let zone=if contains(pin){1}else if contains(delete){2}else{0};
     Some((i,zone))
 }
 
@@ -400,7 +407,31 @@ unsafe extern "system" fn note_list_proc(h:Handle,msg:u32,wp:usize,lp:isize,id:u
 
 unsafe extern "system" fn note_edit_proc(h:Handle,msg:u32,wp:usize,lp:isize,id:usize,_:usize)->isize {
     match msg {
-        WM_SETFOCUS|WM_KILLFOCUS=>{InvalidateRect(GetParent(h),null(),0);}
+        WM_SETFOCUS|WM_KILLFOCUS=>{
+            let parent=GetParent(h);
+            let in_notes=!GetPropW(GetDlgItem(parent,LIST as i32),windows_sys::w!("BuddyNoteList")).is_null();
+            if in_notes {
+                // Only the frame of this edit changes color. Repainting the whole
+                // workspace here can expose an empty list while focus moves to a tab.
+                let mut bounds=RECT::default();
+                if GetWindowRect(h,&mut bounds)!=0 {
+                    MapWindowPoints(std::ptr::null_mut(),parent,(&mut bounds as *mut RECT).cast(),2);
+                    let (left,top,right,bottom)=match GetDlgCtrlID(h) as u16 {
+                        SEARCH=>(30,7,5,5),
+                        INPUT=>(7,5,4,3),
+                        _=>(1,1,1,1),
+                    };
+                    // Focus can change during layout while Ui is borrowed.
+                    // Cover the largest supported zoom in that case.
+                    let scale=crate::read_ui(|ui|ui.scale())
+                        .unwrap_or_else(||crate::shell::dpi(parent) as f32/96.0*1.75);
+                    let pad=|n:i32| (n as f32*scale).ceil() as i32+1;
+                    bounds.left-=pad(left);bounds.top-=pad(top);
+                    bounds.right+=pad(right);bounds.bottom+=pad(bottom);
+                    InvalidateRect(parent,&bounds,0);
+                }
+            } else {InvalidateRect(parent,null(),0);}
+        }
         WM_TIMER if wp==AUTOSAVE as usize=>{
             KillTimer(h,wp);
             SendMessageW(GetParent(h),WM_COMMAND,AUTOSAVE as usize,0);
